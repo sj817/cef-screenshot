@@ -348,9 +348,18 @@ jobs:
           NODE_AUTH_TOKEN: ${{ secrets.NPM_TOKEN }}
 
       - name: 运行 napi prepublish（发布子包）
+        shell: bash
         run: |
-          set -eux
-          npx napi prepublish -t npm --no-gh-release
+          echo "=== napi 版本 ==="
+          pnpm exec napi --version || echo "::error::napi not found"
+          echo "=== 开始 napi prepublish ==="
+          output=$(pnpm exec napi prepublish -t npm --no-gh-release 2>&1) || {
+            exitcode=$?
+            echo "::error::napi prepublish failed (exit $exitcode): $(echo "$output" | tail -30 | tr '\n' ' | ')"
+            echo "$output"
+            exit $exitcode
+          }
+          echo "$output"
         env:
           NODE_AUTH_TOKEN: ${{ secrets.NPM_TOKEN }}
 
