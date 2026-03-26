@@ -1,0 +1,171 @@
+# .github/workflows/build.yml
+# PR / commit 构建检查 — 验证各平台可以正常编译
+#
+# 覆盖平台（CEF 146 全部受支持架构）：
+#   Windows  x64 / ARM64（交叉编译）
+#   Linux    x64 / ARM64（交叉编译）/ ARMv7（交叉编译）
+#   macOS    x64 / ARM64
+
+name: 构建检查
+
+on:
+  push:
+    branches: [main, dev]
+  pull_request:
+    branches: [main]
+
+env:
+  CEF_VERSION: "146.0.7+ga6b143f+chromium-146.0.7680.165"
+
+jobs:
+  build:
+    name: 构建 ${{ matrix.package }}
+    runs-on: ${{ matrix.os }}
+
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          # ── Windows ──────────────────────────────────────────────────────
+          - os: windows-latest
+            target: x86_64-pc-windows-msvc
+            cef_platform: windows64
+            package: win32-x64-msvc
+            node_file: cef-screenshot.win32-x64-msvc.node
+
+          - os: windows-latest
+            target: aarch64-pc-windows-msvc
+            cef_platform: windowsarm64
+            package: win32-arm64-msvc
+            node_file: cef-screenshot.win32-arm64-msvc.node
+
+          # ── Linux ─────────────────────────────────────────────────────────
+          - os: ubuntu-22.04
+            target: x86_64-unknown-linux-gnu
+            cef_platform: linux64
+            package: linux-x64-gnu
+            node_file: cef-screenshot.linux-x64-gnu.node
+
+          - os: ubuntu-22.04
+            target: aarch64-unknown-linux-gnu
+            cef_platform: linuxarm64
+            package: linux-arm64-gnu
+            node_file: cef-screenshot.linux-arm64-gnu.node
+            cross_cc: aarch64-linux-gnu-gcc
+            cross_cxx: aarch64-linux-gnu-g++
+            cross_pkg: gcc-aarch64-linux-gnu g++-aarch64-linux-gnu
+
+          - os: ubuntu-22.04
+            target: armv7-unknown-linux-gnueabihf
+            cef_platform: linuxarm
+            package: linux-arm-gnueabihf
+            node_file: cef-screenshot.linux-arm-gnueabihf.node
+            cross_cc: arm-linux-gnueabihf-gcc
+            cross_cxx: arm-linux-gnueabihf-g++
+            cross_pkg: gcc-arm-linux-gnueabihf g++-arm-linux-gnueabihf
+
+          # ── macOS ─────────────────────────────────────────────────────────
+          - os: macos-13
+            target: x86_64-apple-darwin
+            cef_platform: macosx64
+            package: darwin-x64
+            node_file: cef-screenshot.darwin-x64.node
+
+          - os: macos-latest
+            target: aarch64-apple-darwin
+            cef_platform: macosarm64
+            package: darwin-arm64
+            node_file: cef-screenshot.darwin-arm64.node
+
+    steps:
+      - name: 检出代码
+        uses: actions/checkout@v4
+
+      - name: 安装 Node.js 22
+        uses: actions/setup-node@v4
+        with:
+          node-version: '22'
+
+      - name: 安装 pnpm
+        uses: pnpm/action-setup@v4
+        with:
+          version: '9'
+
+      - name: 安装 Rust（目标 ${{ matrix.target }}）
+        uses: dtolnay/rust-toolchain@stable
+        with:
+          targets: ${{ matrix.target }}
+
+      - name: 缓存 Rust 编译产物
+        uses: Swatinem/rust-cache@v2
+        with:
+          key: ${{ matrix.target }}
+
+      # ── Linux 系统依赖 ────────────────────────────────────────────────────
+      - name: 安装 Linux 系统依赖
+        if: runner.os == 'Linux'
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y \
+            libpng-dev \
+            ninja-build \
+            ${{ matrix.cross_pkg }}
+
+      # ── macOS 系统依赖 ────────────────────────────────────────────────────
+      - name: 安装 macOS 系统依赖
+        if: runner.os == 'macOS'
+        run: brew install ninja libpng
+
+      # ── Windows 依赖 ──────────────────────────────────────────────────────
+      - name: 安装 Windows 系统依赖
+        if: runner.os == 'Windows'
+        run: choco install ninja --yes
+        shell: pwsh
+
+      - name: 安装 Node.js 依赖
+        run: pnpm install --frozen-lockfile
+
+      - name: 缓存 CEF
+        id: cache-cef
+        uses: actions/cache@v4
+        with:
+          path: third_party/${{ matrix.cef_platform }}/cef
+          key: cef-${{ matrix.cef_platform }}-${{ env.CEF_VERSION }}
+
+      - name: 下载 CEF 并构建 C++ 辅助进程
+        if: steps.cache-cef.outputs.cache-hit != 'true'
+        run: pnpm run setup -- --target=${{ matrix.target }}
+        env:
+          CC:  ${{ matrix.cross_cc }}
+          CXX: ${{ matrix.cross_cxx }}
+
+      - name: 仅构建 C++ 辅助进程（使用缓存 CEF）
+        if: steps.cache-cef.outputs.cache-hit == 'true'
+        run: pnpm run setup:cpp -- --target=${{ matrix.target }}
+        env:
+          CC:  ${{ matrix.cross_cc }}
+          CXX: ${{ matrix.cross_cxx }}
+
+      - name: 构建 Rust Napi 绑定
+        run: pnpm exec napi build --platform --release --target ${{ matrix.target }} --js cef-screenshot.cjs
+
+      - name: 类型检查
+        run: pnpm run typecheck
+
+      # 仅在原生运行平台执行完整测试（非交叉编译目标）
+      - name: 运行基础测试（仅本机平台）
+        if: |
+          (matrix.target == 'x86_64-pc-windows-msvc' && runner.os == 'Windows') ||
+          (matrix.target == 'x86_64-unknown-linux-gnu'  && runner.os == 'Linux')  ||
+          (matrix.target == 'x86_64-apple-darwin'        && runner.os == 'macOS') ||
+          (matrix.target == 'aarch64-apple-darwin'       && runner.os == 'macOS')
+        run: pnpm run test
+        timeout-minutes: 5
+
+      - name: 上传 .node 产物
+        uses: actions/upload-artifact@v4
+        with:
+          name: node-${{ matrix.package }}-${{ github.sha }}
+          path: ${{ matrix.node_file }}
+          retention-days: 7
+
