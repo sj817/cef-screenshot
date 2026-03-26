@@ -1,5 +1,5 @@
 // scripts/postinstall.ts — npm 安装后检查 CEF 运行时是否就绪
-// CEF 运行时通过 @cef-screenshot 平台子包自动分发，无需手动下载
+// CEF 运行时通过 cef-screenshot-{platform} 平台子包自动分发，无需手动下载
 
 import { existsSync } from 'node:fs'
 import { join, dirname } from 'node:path'
@@ -25,7 +25,7 @@ function main() {
   const suffix = PLATFORM_PKG_MAP[process.platform]?.[process.arch]
   if (suffix) {
     try {
-      const pkgDir = dirname(_require.resolve(`@cef-screenshot/${suffix}/package.json`))
+      const pkgDir = dirname(_require.resolve(`cef-screenshot-${suffix}/package.json`))
       if (existsSync(join(pkgDir, HELPER_NAME))) {
         return // CEF 运行时已就绪
       }

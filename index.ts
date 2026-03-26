@@ -61,11 +61,11 @@ const HELPER_NAME = process.platform === 'win32'
   : 'cef_screenshot_helper'
 
 function resolveHelperDir(): string | undefined {
-  // 1. npm 安装：从 @cef-screenshot 平台子包中寻找 CEF 运行时
+  // 1. npm 安装：从 cef-screenshot-{platform} 平台子包中寻找 CEF 运行时
   const suffix = PLATFORM_PKG_MAP[process.platform]?.[process.arch]
   if (suffix) {
     try {
-      const pkgDir = dirname(_require.resolve(`@cef-screenshot/${suffix}/package.json`))
+      const pkgDir = dirname(_require.resolve(`cef-screenshot-${suffix}/package.json`))
       if (existsSync(join(pkgDir, HELPER_NAME))) return pkgDir
     } catch {}
   }

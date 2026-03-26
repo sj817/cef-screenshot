@@ -11,8 +11,7 @@ dist/
 *.tar.gz
 *.node
 
-# === napi-rs npm 子包（自动生成）===
-npm/
+# === napi-rs npm 子包（.node 文件在构建时生成，不提交）===
 
 # === pnpm ===
 .pnpm-store/

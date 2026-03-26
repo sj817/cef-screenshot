@@ -287,9 +287,6 @@ jobs:
       - name: 安装依赖
         run: pnpm install --frozen-lockfile
 
-      - name: 创建 npm 子包目录
-        run: pnpm exec napi create-npm-dirs
-
       - name: 下载所有 .node 产物
         uses: actions/download-artifact@v4
         with:
@@ -313,7 +310,7 @@ jobs:
             basename=$(basename "$tarball")
             # cef-screenshot-runtime-win32-x64-msvc-v0.1.0.tar.gz → win32-x64-msvc
             npmSuffix=$(echo "$basename" | sed -E 's/cef-screenshot-runtime-(.+)-v[0-9].*/\1/')
-            targetDir="npm/@cef-screenshot/${npmSuffix}"
+            targetDir="npm/${npmSuffix}"
             if [ -d "$targetDir" ]; then
               echo "解压 CEF 运行时到 ${targetDir} ..."
               tar -xzf "$tarball" -C "$targetDir"
@@ -323,7 +320,7 @@ jobs:
           done
 
           # 更新 npm 子包 package.json，包含所有文件（不只是 .node）
-          for pkgJson in npm/@cef-screenshot/*/package.json; do
+          for pkgJson in npm/*/package.json; do
             node -e "
               const fs = require('fs');
               const pkg = JSON.parse(fs.readFileSync('${pkgJson}', 'utf-8'));
