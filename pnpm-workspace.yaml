@@ -1,0 +1,3 @@
+# pnpm 工作区配置
+packages:
+  - 'packages/*'

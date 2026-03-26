@@ -1,0 +1,71 @@
+{
+  "name": "cef-screenshot",
+  "version": "1.0.0",
+  "description": "基于 CEF 离屏渲染的超低内存网页截图工具",
+  "type": "module",
+  "main": "index.ts",
+  "types": "index.ts",
+  "exports": {
+    ".": {
+      "types": "./index.ts",
+      "default": "./index.ts"
+    }
+  },
+  "files": [
+    "index.ts",
+    "cef-screenshot.cjs",
+    "cef-screenshot.win32-x64-msvc.node",
+    "scripts/postinstall.ts"
+  ],
+  "scripts": {
+    "setup": "node --experimental-strip-types scripts/setup.ts",
+    "setup:cpp": "node --experimental-strip-types scripts/setup.ts --cpp-only",
+    "build": "napi build --platform --release --js cef-screenshot.cjs",
+    "build:debug": "napi build --platform --js cef-screenshot.cjs",
+    "pack:runtime": "node --experimental-strip-types scripts/pack.ts",
+    "postinstall": "node --experimental-strip-types scripts/postinstall.ts",
+    "test": "node --experimental-strip-types test/test.ts",
+    "test:concurrent": "node --experimental-strip-types test/test-concurrent.ts",
+    "benchmark": "node --experimental-strip-types benchmark/compare.ts",
+    "interactive": "node --experimental-strip-types scripts/interactive.ts",
+    "typecheck": "tsc --noEmit"
+  },
+  "napi": {
+    "name": "cef-screenshot",
+    "triples": {
+      "defaults": false,
+      "additional": [
+        "x86_64-pc-windows-msvc",
+        "aarch64-pc-windows-msvc",
+        "x86_64-unknown-linux-gnu",
+        "aarch64-unknown-linux-gnu",
+        "armv7-unknown-linux-gnueabihf",
+        "x86_64-apple-darwin",
+        "aarch64-apple-darwin"
+      ]
+    }
+  },
+  "cef-screenshot": {
+    "mirrorUrl": ""
+  },
+  "optionalDependencies": {
+    "cef-screenshot-win32-x64-msvc": "^1.0.0",
+    "cef-screenshot-win32-arm64-msvc": "^1.0.0",
+    "cef-screenshot-linux-x64-gnu": "^1.0.0",
+    "cef-screenshot-linux-arm64-gnu": "^1.0.0",
+    "cef-screenshot-linux-arm-gnueabihf": "^1.0.0",
+    "cef-screenshot-darwin-x64": "^1.0.0",
+    "cef-screenshot-darwin-arm64": "^1.0.0"
+  },
+  "devDependencies": {
+    "@napi-rs/cli": "^2.18.0",
+    "puppeteer": "^24.40.0",
+    "typescript": "^5.8.0"
+  },
+  "packageManager": "pnpm@9.15.0",
+  "engines": {
+    "node": ">=22.6.0",
+    "pnpm": ">=9"
+  },
+  "license": "MIT"
+}

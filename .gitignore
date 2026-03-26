@@ -1,0 +1,28 @@
+# === 开发依赖目录（不提交）===
+third_party/
+cef-helper/build/
+cef-runtime/
+target/
+node_modules/
+dist/
+
+# === 编译产物 ===
+*.tar.bz2
+*.tar.gz
+*.node
+
+# === pnpm ===
+.pnpm-store/
+package-lock.json
+
+# === 测试/基准输出 ===
+test/output*.png
+benchmark/output/
+benchmark/results.json
+
+# === 交互式脚本输出 ===
+output/
+
+# === OS ===
+Thumbs.db
+.DS_Store
