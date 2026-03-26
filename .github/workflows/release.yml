@@ -296,39 +296,6 @@ jobs:
       - name: 移动产物到 npm 子包
         run: pnpm exec napi artifacts
 
-      - name: 下载所有 CEF 运行时归档
-        uses: actions/download-artifact@v4
-        with:
-          path: dist
-          pattern: runtime-*
-          merge-multiple: true
-
-      - name: 将 CEF 运行时解压到 npm 子包
-        shell: bash
-        run: |
-          for tarball in dist/*.tar.gz; do
-            basename=$(basename "$tarball")
-            # cef-screenshot-runtime-win32-x64-msvc-v0.1.0.tar.gz → win32-x64-msvc
-            npmSuffix=$(echo "$basename" | sed -E 's/cef-screenshot-runtime-(.+)-v[0-9].*/\1/')
-            targetDir="npm/${npmSuffix}"
-            if [ -d "$targetDir" ]; then
-              echo "解压 CEF 运行时到 ${targetDir} ..."
-              tar -xzf "$tarball" -C "$targetDir"
-            else
-              echo "::warning::npm 子包目录不存在: ${targetDir}"
-            fi
-          done
-
-          # 更新 npm 子包 package.json，包含所有文件（不只是 .node）
-          for pkgJson in npm/*/package.json; do
-            node -e "
-              const fs = require('fs');
-              const pkg = JSON.parse(fs.readFileSync('${pkgJson}', 'utf-8'));
-              delete pkg.files;
-              fs.writeFileSync('${pkgJson}', JSON.stringify(pkg, null, 2) + '\n');
-            "
-          done
-
       - name: 列出 npm 子包内容
         run: ls -R ./npm
         shell: bash
