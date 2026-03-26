@@ -85,6 +85,11 @@ pub struct ScreenshotOptions {
 // ---------------------------------------------------------------------------
 // Resolve helper directory: cef-runtime/ (npm) > cef-helper/build/Release/ (dev)
 // ---------------------------------------------------------------------------
+#[cfg(windows)]
+const HELPER_EXE_NAME: &str = "cef_screenshot_helper.exe";
+#[cfg(not(windows))]
+const HELPER_EXE_NAME: &str = "cef_screenshot_helper";
+
 fn resolve_helper_dir(custom: Option<String>) -> PathBuf {
     if let Some(dir) = custom {
         return PathBuf::from(dir);
@@ -92,7 +97,7 @@ fn resolve_helper_dir(custom: Option<String>) -> PathBuf {
     let root = PathBuf::from(env!("CARGO_MANIFEST_DIR"));
     // npm install layout
     let npm_path = root.join("cef-runtime");
-    if npm_path.join("cef_screenshot_helper.exe").exists() {
+    if npm_path.join(HELPER_EXE_NAME).exists() {
         return npm_path;
     }
     // development layout
@@ -120,7 +125,7 @@ pub async fn init(options: Option<InitOptions>) -> Result<()> {
         .min(10);
 
     let helper_dir = resolve_helper_dir(options.and_then(|o| o.helper_dir));
-    let exe = helper_dir.join("cef_screenshot_helper.exe");
+    let exe = helper_dir.join(HELPER_EXE_NAME);
     if !exe.exists() {
         return Err(Error::from_reason(format!(
             "Helper not found: {}  (run `npm run setup` or `node scripts/postinstall.js`)",

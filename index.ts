@@ -2,6 +2,9 @@
 // 封装 napi-rs 原生绑定，提供 TypeScript 类型声明
 
 import { createRequire } from 'node:module'
+import { dirname, join } from 'node:path'
+import { existsSync } from 'node:fs'
+import { fileURLToPath } from 'node:url'
 
 /** 初始化选项 */
 export interface InitOptions {
@@ -29,6 +32,7 @@ interface NativeBinding {
 
 // 延迟加载原生绑定，确保报错信息友好
 const _require = createRequire(import.meta.url)
+const __dirname = dirname(fileURLToPath(import.meta.url))
 let _native: NativeBinding | null = null
 
 function getNative(): NativeBinding {
@@ -45,12 +49,42 @@ function getNative(): NativeBinding {
   }
 }
 
+// ── 自动解析 CEF 运行时所在目录 ──────────────────────────────────────────
+const PLATFORM_PKG_MAP: Record<string, Record<string, string>> = {
+  win32:  { x64: 'win32-x64-msvc', arm64: 'win32-arm64-msvc' },
+  linux:  { x64: 'linux-x64-gnu', arm64: 'linux-arm64-gnu', arm: 'linux-arm-gnueabihf' },
+  darwin: { x64: 'darwin-x64', arm64: 'darwin-arm64' },
+}
+
+const HELPER_NAME = process.platform === 'win32'
+  ? 'cef_screenshot_helper.exe'
+  : 'cef_screenshot_helper'
+
+function resolveHelperDir(): string | undefined {
+  // 1. npm 安装：从 @cef-screenshot 平台子包中寻找 CEF 运行时
+  const suffix = PLATFORM_PKG_MAP[process.platform]?.[process.arch]
+  if (suffix) {
+    try {
+      const pkgDir = dirname(_require.resolve(`@cef-screenshot/${suffix}/package.json`))
+      if (existsSync(join(pkgDir, HELPER_NAME))) return pkgDir
+    } catch {}
+  }
+  // 2. 开发环境：本地构建目录
+  const devDir = join(__dirname, 'cef-helper', 'build', 'Release')
+  if (existsSync(join(devDir, HELPER_NAME))) return devDir
+  return undefined
+}
+
 /**
  * 启动 CEF 辅助进程，初始化浏览器池
  * 必须在调用 screenshot() 之前调用
  */
 export function init(options?: InitOptions): Promise<void> {
-  return getNative().init(options)
+  const opts = { ...options }
+  if (!opts.helperDir) {
+    opts.helperDir = resolveHelperDir()
+  }
+  return getNative().init(opts)
 }
 
 /**
