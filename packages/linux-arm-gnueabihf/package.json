@@ -1,0 +1,18 @@
+{
+  "name": "cef-screenshot-linux-arm-gnueabihf",
+  "version": "1.0.0",
+  "description": "cef-screenshot Linux ARMv7 gnueabihf 原生绑定",
+  "os": ["linux"],
+  "cpu": ["arm"],
+  "main": "cef-screenshot.linux-arm-gnueabihf.node",
+  "files": [
+    "cef-screenshot.linux-arm-gnueabihf.node",
+    "README.md"
+  ],
+  "license": "MIT",
+  "repository": {
+    "type": "git",
+    "url": "https://github.com/your-org/cef-screenshot.git",
+    "directory": "packages/linux-arm-gnueabihf"
+  }
+}

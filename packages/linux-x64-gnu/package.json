@@ -1,0 +1,18 @@
+{
+  "name": "cef-screenshot-linux-x64-gnu",
+  "version": "1.0.0",
+  "description": "cef-screenshot Linux x64 GNU 原生绑定",
+  "os": ["linux"],
+  "cpu": ["x64"],
+  "main": "cef-screenshot.linux-x64-gnu.node",
+  "files": [
+    "cef-screenshot.linux-x64-gnu.node",
+    "README.md"
+  ],
+  "license": "MIT",
+  "repository": {
+    "type": "git",
+    "url": "https://github.com/your-org/cef-screenshot.git",
+    "directory": "packages/linux-x64-gnu"
+  }
+}
