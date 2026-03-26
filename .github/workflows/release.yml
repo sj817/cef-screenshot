@@ -179,6 +179,15 @@ jobs:
           CROSS_CC:  ${{ matrix.settings.cross_cc }}
           CROSS_CXX: ${{ matrix.settings.cross_cxx }}
 
+      - name: 输出构建日志到 Summary（失败时）
+        if: failure()
+        run: |
+          echo "## 构建日志（最后 200 行）" >> $GITHUB_STEP_SUMMARY
+          echo '```' >> $GITHUB_STEP_SUMMARY
+          tail -200 /tmp/cef-build.log >> $GITHUB_STEP_SUMMARY 2>/dev/null || echo "No build log found" >> $GITHUB_STEP_SUMMARY
+          echo '```' >> $GITHUB_STEP_SUMMARY
+        shell: bash
+
       - name: 上传构建日志（失败时）
         if: failure()
         uses: actions/upload-artifact@v4
