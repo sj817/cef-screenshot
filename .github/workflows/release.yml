@@ -99,21 +99,30 @@ jobs:
         if: runner.os == 'Linux'
         run: |
           sudo apt-get update
-          case "${{ matrix.settings.target }}" in
-            aarch64-unknown-linux-gnu)
-              sudo dpkg --add-architecture arm64
-              sudo apt-get update
-              sudo apt-get install -y libpng-dev:arm64 ninja-build ${{ matrix.settings.cross_pkg }}
-              ;;
-            armv7-unknown-linux-gnueabihf)
-              sudo dpkg --add-architecture armhf
-              sudo apt-get update
-              sudo apt-get install -y libpng-dev:armhf ninja-build ${{ matrix.settings.cross_pkg }}
-              ;;
-            *)
-              sudo apt-get install -y libpng-dev ninja-build ${{ matrix.settings.cross_pkg }}
-              ;;
-          esac
+          sudo apt-get install -y libpng-dev ninja-build ${{ matrix.settings.cross_pkg }}
+
+      # ── Linux ARM 交叉编译 libpng ────────────────────────────────
+      - name: 构建交叉编译 libpng（Linux ARM）
+        if: matrix.settings.target == 'aarch64-unknown-linux-gnu' || matrix.settings.target == 'armv7-unknown-linux-gnueabihf'
+        run: |
+          # 1) 交叉编译 zlib（libpng 依赖）
+          curl -sL https://zlib.net/zlib-1.3.1.tar.gz | tar xz
+          cd zlib-1.3.1
+          CC=${{ matrix.settings.cross_cc }} ./configure --prefix=/tmp/libpng-cross --static
+          make -j$(nproc)
+          make install
+          cd ..
+          # 2) 交叉编译 libpng
+          curl -sL "https://download.sourceforge.net/libpng/libpng-1.6.44.tar.xz" | tar xJ
+          cd libpng-1.6.44
+          cmake -B build -G Ninja \
+            -DCMAKE_C_COMPILER=${{ matrix.settings.cross_cc }} \
+            -DCMAKE_SYSTEM_NAME=Linux \
+            -DCMAKE_INSTALL_PREFIX=/tmp/libpng-cross \
+            -DCMAKE_PREFIX_PATH=/tmp/libpng-cross \
+            -DPNG_TESTS=OFF -DPNG_TOOLS=OFF -DPNG_SHARED=OFF
+          cmake --build build
+          cmake --install build
 
       # ── macOS 系统依赖 ──────────────────────────────────────────
       - name: 安装 macOS 系统依赖
@@ -147,19 +156,23 @@ jobs:
 
       - name: 下载 CEF 并构建 C++ 辅助进程
         if: steps.cache-cef.outputs.cache-hit != 'true'
-        run: pnpm run setup -- --target=${{ matrix.settings.target }}
+        run: |
+          [[ -n "$CROSS_CC" ]] && export CC="$CROSS_CC" CXX="$CROSS_CXX"
+          pnpm run setup -- --target=${{ matrix.settings.target }}
         shell: bash
         env:
-          CC:  ${{ matrix.settings.cross_cc }}
-          CXX: ${{ matrix.settings.cross_cxx }}
+          CROSS_CC:  ${{ matrix.settings.cross_cc }}
+          CROSS_CXX: ${{ matrix.settings.cross_cxx }}
 
       - name: 仅构建 C++ 辅助进程（使用缓存 CEF）
         if: steps.cache-cef.outputs.cache-hit == 'true'
-        run: pnpm run setup:cpp -- --target=${{ matrix.settings.target }}
+        run: |
+          [[ -n "$CROSS_CC" ]] && export CC="$CROSS_CC" CXX="$CROSS_CXX"
+          pnpm run setup:cpp -- --target=${{ matrix.settings.target }}
         shell: bash
         env:
-          CC:  ${{ matrix.settings.cross_cc }}
-          CXX: ${{ matrix.settings.cross_cxx }}
+          CROSS_CC:  ${{ matrix.settings.cross_cc }}
+          CROSS_CXX: ${{ matrix.settings.cross_cxx }}
 
       # ── 构建 Rust Napi 绑定 ────────────────────────────────────
       - name: 构建 Rust Napi 绑定

@@ -7,7 +7,7 @@
 
 import { execSync } from 'node:child_process'
 import {
-  existsSync, mkdirSync, readdirSync, statSync,
+  existsSync, mkdirSync, readdirSync, statSync, readFileSync,
   createWriteStream, unlinkSync, copyFileSync, rmSync, renameSync,
 } from 'node:fs'
 import { join, dirname } from 'node:path'
@@ -132,21 +132,31 @@ function getCmakeConfig(): CmakeConfig {
     if (TARGET_ARG === 'aarch64-apple-darwin' && osArch() === 'x64') {
       defines.push('CMAKE_OSX_ARCHITECTURES=arm64')
     }
-    defines.push(`CMAKE_PREFIX_PATH=${prefixPaths.join(';')}`)
+    defines.push(`CMAKE_PREFIX_PATH="${prefixPaths.join(';')}"`)  // 引号防止 shell 拆分分号
     return { generator: 'Ninja', extraDefines: defines }
   }
 
   // ── Linux 交叉编译 ──────────────────────────────────────────────────
   if (TARGET_ARG === 'aarch64-unknown-linux-gnu' && osPlatform() === 'linux' && osArch() !== 'arm64') {
+    const extraDefines: string[] = []
+    if (existsSync('/tmp/libpng-cross')) {
+      extraDefines.push('CMAKE_PREFIX_PATH=/tmp/libpng-cross')
+    }
     return {
       generator: 'Ninja',
       toolchain: join(ROOT_DIR, 'ci', 'toolchains', 'aarch64-linux-gnu.cmake'),
+      extraDefines,
     }
   }
   if (TARGET_ARG === 'armv7-unknown-linux-gnueabihf' && osPlatform() === 'linux' && osArch() !== 'arm') {
+    const extraDefines: string[] = []
+    if (existsSync('/tmp/libpng-cross')) {
+      extraDefines.push('CMAKE_PREFIX_PATH=/tmp/libpng-cross')
+    }
     return {
       generator: 'Ninja',
       toolchain: join(ROOT_DIR, 'ci', 'toolchains', 'armv7-linux-gnueabihf.cmake'),
+      extraDefines,
     }
   }
 
@@ -247,7 +257,19 @@ function buildHelper() {
   ].filter(Boolean).join(' ')
 
   console.log('[C++] CMake 配置...')
-  execSync(configArgs, { stdio: 'inherit', cwd: HELPER_DIR })
+  console.log(`[C++] Command: ${configArgs}`)
+  try {
+    execSync(configArgs, { stdio: 'inherit', cwd: HELPER_DIR })
+  } catch (e) {
+    // 打印 CMake 日志以便诊断
+    const logPath = join(HELPER_BUILD_DIR, 'CMakeFiles', 'CMakeConfigureLog.yaml')
+    if (existsSync(logPath)) {
+      const log = readFileSync(logPath, 'utf-8')
+      console.error('\n[C++] CMake configure log (last 5000 chars):')
+      console.error(log.slice(-5000))
+    }
+    throw e
+  }
 
   console.log('[C++] 编译 Release...')
   execSync(`${cmake} --build "${HELPER_BUILD_DIR}" --config Release`, { stdio: 'inherit' })
