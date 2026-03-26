@@ -11,6 +11,11 @@ import { fileURLToPath } from 'node:url'
 import { createRequire } from 'node:module'
 import { platform as osPlatform, arch as osArch } from 'node:os'
 
+/** 将路径中的反斜杠转为正斜杠（供 tar 命令使用） */
+function toForwardSlash(p: string): string {
+  return p.replace(/\\/g, '/')
+}
+
 const __dirname = dirname(fileURLToPath(import.meta.url))
 const _require = createRequire(import.meta.url)
 
@@ -87,6 +92,22 @@ function calcDirSize(dir: string): number {
 }
 
 function main() {
+  console.log(`[pack] target: ${target}`)
+  console.log(`[pack] cefPlatform: ${cefPlatform}`)
+  console.log(`[pack] RELEASE_DIR: ${RELEASE_DIR}`)
+  console.log(`[pack] helperExeName: ${helperExeName}`)
+  console.log(`[pack] cefLibName: ${cefLibName}`)
+
+  if (!existsSync(RELEASE_DIR)) {
+    console.error(`错误：Release 目录不存在：${RELEASE_DIR}`)
+    console.error('可用的构建目录：')
+    const buildDir = join(ROOT_DIR, 'cef-helper', 'build')
+    if (existsSync(buildDir)) {
+      readdirSync(buildDir).forEach(d => console.error(`  - ${d}`))
+    }
+    process.exit(1)
+  }
+
   if (!existsSync(join(RELEASE_DIR, helperExeName))) {
     console.error(`错误：在以下目录未找到 ${helperExeName}：`, RELEASE_DIR)
     console.error('请先运行 pnpm run setup 编译 C++ 辅助进程。')
@@ -119,12 +140,32 @@ function main() {
   const totalBytes = calcDirSize(RELEASE_DIR)
   console.log(`未压缩大小: ${(totalBytes / 1024 / 1024).toFixed(1)} MB`)
 
-  // 构建排除参数
-  const excludeFlags = [...EXCLUDE_EXTS].map(ext => `--exclude="*${ext}"`).join(' ')
-  const cmd = `tar -czf "${archivePath}" ${excludeFlags} -C "${RELEASE_DIR}" .`
+  // 构建排除参数（不加引号，兼容 Windows cmd.exe 和 Unix shell）
+  const excludeFlags = [...EXCLUDE_EXTS].map(ext => `--exclude=*${ext}`).join(' ')
+
+  // Windows: 使用 System32\tar.exe 避免 Git Bash tar 干扰；路径用正斜杠
+  const tarCmd = osPlatform() === 'win32'
+    ? `"${process.env.SystemRoot || 'C:\\Windows'}\\System32\\tar.exe"`
+    : 'tar'
+  const archivePathFwd = toForwardSlash(archivePath)
+  const releaseDirFwd = toForwardSlash(RELEASE_DIR)
+  const cmd = `${tarCmd} -czf "${archivePathFwd}" ${excludeFlags} -C "${releaseDirFwd}" .`
 
   console.log('\n正在压缩...')
-  execSync(cmd, { stdio: 'inherit' })
+  console.log(`[tar] ${cmd}`)
+  try {
+    execSync(cmd, { stdio: 'inherit' })
+  } catch (e: any) {
+    console.error(`\ntar 命令失败（exit code ${e.status}）`)
+    console.error('尝试列出来源目录内容：')
+    try {
+      const files = readdirSync(RELEASE_DIR)
+      console.error(`  文件数量: ${files.length}`)
+      files.slice(0, 30).forEach(f => console.error(`  - ${f}`))
+      if (files.length > 30) console.error(`  ... 还有 ${files.length - 30} 个文件`)
+    } catch { console.error('  （无法读取目录）') }
+    throw e
+  }
 
   const archiveSize = statSync(archivePath).size
   const ratio = ((1 - archiveSize / totalBytes) * 100).toFixed(1)
