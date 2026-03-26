@@ -272,7 +272,28 @@ function buildHelper() {
   }
 
   console.log('[C++] 编译 Release...')
-  execSync(`${cmake} --build "${HELPER_BUILD_DIR}" --config Release`, { stdio: 'inherit' })
+  const buildCmd = `${cmake} --build "${HELPER_BUILD_DIR}" --config Release`
+  console.log(`[C++] Build command: ${buildCmd}`)
+  try {
+    execSync(buildCmd, { stdio: 'inherit' })
+  } catch (e) {
+    // 构建失败时尝试用 verbose 模式重新运行以获取详细错误
+    console.error('\n[C++] Build failed! Retrying last 3 targets with verbose output...')
+    try {
+      const verboseOutput = execSync(
+        `${cmake} --build "${HELPER_BUILD_DIR}" --config Release --verbose -- -j1 2>&1`,
+        { encoding: 'utf-8', maxBuffer: 10 * 1024 * 1024, timeout: 60000 }
+      ).toString()
+      const lines = verboseOutput.split('\n')
+      console.error(lines.slice(-80).join('\n'))
+    } catch (verboseErr: any) {
+      // verbose 重建也会失败，输出最后几行
+      const output = verboseErr?.stdout || verboseErr?.stderr || ''
+      const lines = output.toString().split('\n')
+      console.error(lines.slice(-80).join('\n'))
+    }
+    throw e
+  }
 
   // 复制 CEF 运行时文件到输出目录
   const outputDir = join(HELPER_BUILD_DIR, 'Release')

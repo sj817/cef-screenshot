@@ -67,18 +67,25 @@ elseif(UNIX AND NOT APPLE)
 elseif(APPLE)
   # macOS: 链接 CEF framework + libpng + 系统 framework
   find_package(PNG REQUIRED)
+
+  # 使用 find_library 查找 CEF framework，避免 "-framework Name With Spaces" 在 Ninja 下的转义问题
+  find_library(CEF_FRAMEWORK
+    NAMES "Chromium Embedded Framework"
+    PATHS "${CEF_ROOT}/Release"
+    NO_DEFAULT_PATH
+  )
+  if(NOT CEF_FRAMEWORK)
+    message(FATAL_ERROR "未找到 Chromium Embedded Framework，搜索路径: ${CEF_ROOT}/Release")
+  endif()
+
   target_link_libraries(${PROJECT_NAME}
     libcef_dll_wrapper
+    ${CEF_FRAMEWORK}
     PNG::PNG
     "-framework CoreFoundation"
     "-framework AppKit"
   )
-  # 链接 CEF .framework（位于 Release/ 下）
-  target_link_options(${PROJECT_NAME} PRIVATE
-    "-F${CEF_ROOT}/Release"
-    "-framework Chromium Embedded Framework"
-  )
-  # RPATH 指向同级 Frameworks 目录
+  # RPATH 指向同级目录
   set_target_properties(${PROJECT_NAME} PROPERTIES
     BUILD_RPATH  "@executable_path"
     INSTALL_RPATH "@executable_path"
