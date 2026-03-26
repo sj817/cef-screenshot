@@ -100,6 +100,7 @@ interface CmakeConfig {
   generator: string
   arch?: string       // Windows -A 参数
   toolchain?: string  // 交叉编译工具链文件
+  extraDefines?: string[]  // 额外 CMake 定义
 }
 
 function getCmakeConfig(): CmakeConfig {
@@ -107,6 +108,13 @@ function getCmakeConfig(): CmakeConfig {
     // 交叉编译场景
     if (TARGET_ARG === 'x86_64-pc-windows-msvc')  return { generator: 'Visual Studio 17 2022', arch: 'x64' }
     if (TARGET_ARG === 'aarch64-pc-windows-msvc') return { generator: 'Visual Studio 17 2022', arch: 'ARM64' }
+    // macOS 交叉编译（ARM64 主机编译 x86_64 或反之）
+    if (TARGET_ARG === 'x86_64-apple-darwin' && osPlatform() === 'darwin' && osArch() === 'arm64') {
+      return { generator: 'Ninja', extraDefines: ['CMAKE_OSX_ARCHITECTURES=x86_64'] }
+    }
+    if (TARGET_ARG === 'aarch64-apple-darwin' && osPlatform() === 'darwin' && osArch() === 'x64') {
+      return { generator: 'Ninja', extraDefines: ['CMAKE_OSX_ARCHITECTURES=arm64'] }
+    }
     // Linux 交叉编译统一使用 Ninja + CC/CXX 环境变量
     // 其余的和本机构建一致
   }
@@ -202,6 +210,7 @@ function buildHelper() {
     `-G "${cfg.generator}"`,
     cfg.arch      ? `-A ${cfg.arch}` : '',
     cfg.toolchain ? `-DCMAKE_TOOLCHAIN_FILE="${cfg.toolchain}"` : '',
+    ...(cfg.extraDefines || []).map(d => `-D${d}`),
   ].filter(Boolean).join(' ')
 
   console.log('[C++] CMake 配置...')

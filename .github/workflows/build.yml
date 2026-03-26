@@ -52,7 +52,7 @@ jobs:
             cross_pkg: gcc-arm-linux-gnueabihf g++-arm-linux-gnueabihf
 
           # ── macOS ──────────────────────────────────────────────────
-          - host: macos-13
+          - host: macos-latest
             target: x86_64-apple-darwin
             cef_platform: macosx64
           - host: macos-latest
@@ -64,17 +64,15 @@ jobs:
 
     steps:
       - name: 检出代码
-        uses: actions/checkout@v4
+        uses: actions/checkout@v6
 
       - name: 安装 Node.js 22
-        uses: actions/setup-node@v4
+        uses: actions/setup-node@v6
         with:
           node-version: 22
 
       - name: 安装 pnpm
         uses: pnpm/action-setup@v4
-        with:
-          version: 9
 
       - name: 安装 Rust
         uses: dtolnay/rust-toolchain@stable
