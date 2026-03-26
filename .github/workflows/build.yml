@@ -38,13 +38,13 @@ jobs:
           - host: ubuntu-22.04
             target: x86_64-unknown-linux-gnu
             cef_platform: linux64
-          - host: ubuntu-22.04
+          - host: ubuntu-24.04
             target: aarch64-unknown-linux-gnu
             cef_platform: linuxarm64
             cross_cc: aarch64-linux-gnu-gcc
             cross_cxx: aarch64-linux-gnu-g++
             cross_pkg: gcc-aarch64-linux-gnu g++-aarch64-linux-gnu
-          - host: ubuntu-22.04
+          - host: ubuntu-24.04
             target: armv7-unknown-linux-gnueabihf
             cef_platform: linuxarm
             cross_cc: arm-linux-gnueabihf-gcc
@@ -90,6 +90,12 @@ jobs:
         run: |
           sudo apt-get update
           sudo apt-get install -y libpng-dev ninja-build ${{ matrix.settings.cross_pkg }}
+          # 输出交叉编译器版本用于诊断
+          if [ -n "${{ matrix.settings.cross_cc }}" ]; then
+            echo "--- Cross compiler versions ---"
+            ${{ matrix.settings.cross_cc }} --version
+            ${{ matrix.settings.cross_cxx }} --version
+          fi
 
       # ── Linux ARM 交叉编译 libpng ────────────────────────────────
       - name: 构建交叉编译 libpng（Linux ARM）
@@ -148,7 +154,7 @@ jobs:
         if: steps.cache-cef.outputs.cache-hit != 'true'
         run: |
           [[ -n "$CROSS_CC" ]] && export CC="$CROSS_CC" CXX="$CROSS_CXX"
-          pnpm run setup -- --target=${{ matrix.settings.target }}
+          pnpm run setup -- --target=${{ matrix.settings.target }} 2>&1 | tee /tmp/cef-build.log
         shell: bash
         env:
           CROSS_CC:  ${{ matrix.settings.cross_cc }}
@@ -158,11 +164,19 @@ jobs:
         if: steps.cache-cef.outputs.cache-hit == 'true'
         run: |
           [[ -n "$CROSS_CC" ]] && export CC="$CROSS_CC" CXX="$CROSS_CXX"
-          pnpm run setup:cpp -- --target=${{ matrix.settings.target }}
+          pnpm run setup:cpp -- --target=${{ matrix.settings.target }} 2>&1 | tee /tmp/cef-build.log
         shell: bash
         env:
           CROSS_CC:  ${{ matrix.settings.cross_cc }}
           CROSS_CXX: ${{ matrix.settings.cross_cxx }}
+
+      - name: 上传构建日志（失败时）
+        if: failure()
+        uses: actions/upload-artifact@v4
+        with:
+          name: build-logs-${{ matrix.settings.target }}
+          path: /tmp/cef-build.log
+          if-no-files-found: ignore
 
       # ── 构建 Rust Napi 绑定 ────────────────────────────────────
       - name: 构建 Rust Napi 绑定
