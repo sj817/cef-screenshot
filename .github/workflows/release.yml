@@ -54,12 +54,14 @@ jobs:
             cross_cc: aarch64-linux-gnu-gcc
             cross_cxx: aarch64-linux-gnu-g++
             cross_pkg: gcc-aarch64-linux-gnu g++-aarch64-linux-gnu
+            cross_arch: aarch64
           - host: ubuntu-24.04
             target: armv7-unknown-linux-gnueabihf
             cef_platform: linuxarm
             cross_cc: arm-linux-gnueabihf-gcc
             cross_cxx: arm-linux-gnueabihf-g++
             cross_pkg: gcc-arm-linux-gnueabihf g++-arm-linux-gnueabihf
+            cross_arch: arm
 
           # ── macOS ──────────────────────────────────────────────────
           - host: macos-latest
@@ -123,6 +125,7 @@ jobs:
           cmake -B build -G Ninja \
             -DCMAKE_C_COMPILER=${{ matrix.settings.cross_cc }} \
             -DCMAKE_SYSTEM_NAME=Linux \
+            -DCMAKE_SYSTEM_PROCESSOR=${{ matrix.settings.cross_arch }} \
             -DCMAKE_INSTALL_PREFIX=/tmp/libpng-cross \
             -DCMAKE_PREFIX_PATH=/tmp/libpng-cross \
             -DPNG_TESTS=OFF -DPNG_TOOLS=OFF -DPNG_SHARED=OFF
