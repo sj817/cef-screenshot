@@ -170,13 +170,22 @@ jobs:
           CROSS_CC:  ${{ matrix.settings.cross_cc }}
           CROSS_CXX: ${{ matrix.settings.cross_cxx }}
 
-      - name: 输出构建日志到 Summary（失败时）
+      - name: 输出构建错误（失败时）
         if: failure()
         run: |
           echo "## 构建日志（最后 200 行）" >> $GITHUB_STEP_SUMMARY
           echo '```' >> $GITHUB_STEP_SUMMARY
           tail -200 /tmp/cef-build.log >> $GITHUB_STEP_SUMMARY 2>/dev/null || echo "No build log found" >> $GITHUB_STEP_SUMMARY
           echo '```' >> $GITHUB_STEP_SUMMARY
+          # 同时创建一个包含错误日志的 gist（可通过 API 公开获取）
+          echo "=== Last 50 lines of build log ==="
+          tail -50 /tmp/cef-build.log 2>/dev/null || echo "No build log found"
+          # 将关键错误行输出为 GitHub 注解
+          if [ -f /tmp/cef-build.log ]; then
+            grep -i "error\|fatal\|failed\|undefined reference\|no such file" /tmp/cef-build.log | tail -20 | while IFS= read -r line; do
+              echo "::error::$line"
+            done
+          fi
         shell: bash
 
       - name: 上传构建日志（失败时）
