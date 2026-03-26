@@ -1,20 +1,19 @@
-# .github/workflows/release.yml
 # 发布工作流 — 推送 v* 标签时自动构建并发布到 npm
 #
-# 覆盖平台（CEF 146 全部受支持架构）：
-#   Windows  x64 / ARM64
-#   Linux    x64 / ARM64 / ARMv7
-#   macOS    x64 (Intel) / ARM64 (Apple Silicon)
+# 使用 napi-rs 标准发布流程：
+#   1. 多平台矩阵构建所有 .node 绑定
+#   2. napi create-npm-dirs → napi artifacts → npm publish
+#   3. npm publish 触发 prepublishOnly (napi prepublish) 自动发布所有平台子包
 #
 # 使用前提：
 #   1. 在 GitHub 仓库 Settings > Secrets 中设置 NPM_TOKEN
-#   2. npm 上已创建相关包（或首次发布自动创建）
+#   2. npm 包名未被占用
 #
 # 发布流程：
 #   git tag v1.0.0
 #   git push origin v1.0.0
 
-name: 发布
+name: Release
 
 on:
   push:
@@ -22,12 +21,9 @@ on:
       - 'v*'
 
 permissions:
-  contents: write   # 创建 GitHub Release
-  id-token: write   # npm provenance
+  contents: write
+  id-token: write
 
-# ─────────────────────────────────────────────────────────────────────────────
-# 公共变量
-# ─────────────────────────────────────────────────────────────────────────────
 env:
   CEF_VERSION: "146.0.7+ga6b143f+chromium-146.0.7680.165"
 
@@ -36,65 +32,45 @@ jobs:
   # 1. 多平台矩阵构建
   # ─────────────────────────────────────────────────────────────────────────
   build:
-    name: 构建 ${{ matrix.package }}
-    runs-on: ${{ matrix.os }}
-
     strategy:
       fail-fast: false
       matrix:
-        include:
-          # ── Windows ──────────────────────────────────────────────────────
-          - os: windows-latest
+        settings:
+          # ── Windows ────────────────────────────────────────────────
+          - host: windows-latest
             target: x86_64-pc-windows-msvc
             cef_platform: windows64
-            package: win32-x64-msvc
-            cmake_arch: x64
-            node_file: cef-screenshot.win32-x64-msvc.node
-
-          - os: windows-latest
+          - host: windows-latest
             target: aarch64-pc-windows-msvc
             cef_platform: windowsarm64
-            package: win32-arm64-msvc
-            cmake_arch: ARM64
-            node_file: cef-screenshot.win32-arm64-msvc.node
 
-          # ── Linux ─────────────────────────────────────────────────────────
-          - os: ubuntu-22.04
+          # ── Linux ──────────────────────────────────────────────────
+          - host: ubuntu-22.04
             target: x86_64-unknown-linux-gnu
             cef_platform: linux64
-            package: linux-x64-gnu
-            node_file: cef-screenshot.linux-x64-gnu.node
-
-          - os: ubuntu-22.04
+          - host: ubuntu-22.04
             target: aarch64-unknown-linux-gnu
             cef_platform: linuxarm64
-            package: linux-arm64-gnu
-            node_file: cef-screenshot.linux-arm64-gnu.node
             cross_cc: aarch64-linux-gnu-gcc
             cross_cxx: aarch64-linux-gnu-g++
             cross_pkg: gcc-aarch64-linux-gnu g++-aarch64-linux-gnu
-
-          - os: ubuntu-22.04
+          - host: ubuntu-22.04
             target: armv7-unknown-linux-gnueabihf
             cef_platform: linuxarm
-            package: linux-arm-gnueabihf
-            node_file: cef-screenshot.linux-arm-gnueabihf.node
             cross_cc: arm-linux-gnueabihf-gcc
             cross_cxx: arm-linux-gnueabihf-g++
             cross_pkg: gcc-arm-linux-gnueabihf g++-arm-linux-gnueabihf
 
-          # ── macOS ─────────────────────────────────────────────────────────
-          - os: macos-13          # Intel (x64)
+          # ── macOS ──────────────────────────────────────────────────
+          - host: macos-13
             target: x86_64-apple-darwin
             cef_platform: macosx64
-            package: darwin-x64
-            node_file: cef-screenshot.darwin-x64.node
-
-          - os: macos-latest      # Apple Silicon (arm64)
+          - host: macos-latest
             target: aarch64-apple-darwin
             cef_platform: macosarm64
-            package: darwin-arm64
-            node_file: cef-screenshot.darwin-arm64.node
+
+    name: Build ${{ matrix.settings.target }}
+    runs-on: ${{ matrix.settings.host }}
 
     steps:
       - name: 检出代码
@@ -103,25 +79,24 @@ jobs:
       - name: 安装 Node.js 22
         uses: actions/setup-node@v4
         with:
-          node-version: '22'
-          registry-url: 'https://registry.npmjs.org'
+          node-version: 22
 
       - name: 安装 pnpm
         uses: pnpm/action-setup@v4
         with:
-          version: '9'
+          version: 9
 
-      - name: 安装 Rust（目标 ${{ matrix.target }}）
+      - name: 安装 Rust
         uses: dtolnay/rust-toolchain@stable
         with:
-          targets: ${{ matrix.target }}
+          targets: ${{ matrix.settings.target }}
 
       - name: 缓存 Rust 编译产物
         uses: Swatinem/rust-cache@v2
         with:
-          key: ${{ matrix.target }}
+          key: ${{ matrix.settings.target }}
 
-      # ── Linux 系统依赖 ────────────────────────────────────────────────────
+      # ── Linux 系统依赖 ──────────────────────────────────────────
       - name: 安装 Linux 系统依赖
         if: runner.os == 'Linux'
         run: |
@@ -129,86 +104,71 @@ jobs:
           sudo apt-get install -y \
             libpng-dev \
             ninja-build \
-            ${{ matrix.cross_pkg }}
+            ${{ matrix.settings.cross_pkg }}
 
-      # ── macOS 系统依赖 ────────────────────────────────────────────────────
+      # ── macOS 系统依赖 ──────────────────────────────────────────
       - name: 安装 macOS 系统依赖
         if: runner.os == 'macOS'
         run: brew install ninja libpng
 
-      # ── Windows 系统依赖（MSVC + CMake 已内置）────────────────────────────
-      - name: 安装 Windows 系统依赖
-        if: runner.os == 'Windows'
-        run: choco install ninja --yes
-        shell: pwsh
-
+      # ── Node.js 依赖 ───────────────────────────────────────────
       - name: 安装 Node.js 依赖
         run: pnpm install --frozen-lockfile
 
-      # ── CEF 缓存（键按平台隔离）────────────────────────────────────────────
+      # ── CEF 缓存 + 构建 C++ Helper ─────────────────────────────
       - name: 缓存 CEF
         id: cache-cef
         uses: actions/cache@v4
         with:
-          path: third_party/${{ matrix.cef_platform }}/cef
-          key: cef-${{ matrix.cef_platform }}-${{ env.CEF_VERSION }}
+          path: third_party/${{ matrix.settings.cef_platform }}/cef
+          key: cef-${{ matrix.settings.cef_platform }}-${{ env.CEF_VERSION }}
 
-      # ── 构建 C++ Helper ────────────────────────────────────────────────────
       - name: 下载 CEF 并构建 C++ 辅助进程
         if: steps.cache-cef.outputs.cache-hit != 'true'
-        run: pnpm run setup -- --target=${{ matrix.target }}
+        run: pnpm run setup -- --target=${{ matrix.settings.target }}
+        shell: bash
         env:
-          CC:  ${{ matrix.cross_cc }}
-          CXX: ${{ matrix.cross_cxx }}
+          CC:  ${{ matrix.settings.cross_cc }}
+          CXX: ${{ matrix.settings.cross_cxx }}
 
       - name: 仅构建 C++ 辅助进程（使用缓存 CEF）
         if: steps.cache-cef.outputs.cache-hit == 'true'
-        run: pnpm run setup:cpp -- --target=${{ matrix.target }}
+        run: pnpm run setup:cpp -- --target=${{ matrix.settings.target }}
+        shell: bash
         env:
-          CC:  ${{ matrix.cross_cc }}
-          CXX: ${{ matrix.cross_cxx }}
+          CC:  ${{ matrix.settings.cross_cc }}
+          CXX: ${{ matrix.settings.cross_cxx }}
 
-      # ── 构建 Rust Napi 绑定 ────────────────────────────────────────────────
+      # ── 构建 Rust Napi 绑定 ────────────────────────────────────
       - name: 构建 Rust Napi 绑定
-        run: pnpm exec napi build --platform --release --target ${{ matrix.target }} --js cef-screenshot.cjs
-
-      # ── 打包 CEF 运行时 ────────────────────────────────────────────────────
-      - name: 提取版本号
-        id: version
-        run: echo "VERSION=${GITHUB_REF_NAME#v}" >> $GITHUB_OUTPUT
+        run: pnpm exec napi build --platform --release --target ${{ matrix.settings.target }} --js cef-screenshot.cjs
         shell: bash
 
+      # ── 打包 CEF 运行时归档 ────────────────────────────────────
       - name: 打包 CEF 运行时归档
-        run: pnpm run pack:runtime -- --target=${{ matrix.target }}
+        run: pnpm run pack:runtime -- --target=${{ matrix.settings.target }}
+        shell: bash
 
-      # ── 复制 .node 到子包目录 ─────────────────────────────────────────────
-      - name: 复制 .node 到子包目录（Unix）
-        if: runner.os != 'Windows'
-        run: cp "${{ matrix.node_file }}" "packages/${{ matrix.package }}/"
-
-      - name: 复制 .node 到子包目录（Windows）
-        if: runner.os == 'Windows'
-        run: Copy-Item "${{ matrix.node_file }}" "packages/${{ matrix.package }}/"
-        shell: pwsh
-
-      # ── 上传产物 ──────────────────────────────────────────────────────────
+      # ── 上传产物 ───────────────────────────────────────────────
       - name: 上传 .node 产物
         uses: actions/upload-artifact@v4
         with:
-          name: node-${{ matrix.package }}
-          path: packages/${{ matrix.package }}/${{ matrix.node_file }}
+          name: bindings-${{ matrix.settings.target }}
+          path: "*.node"
+          if-no-files-found: error
 
       - name: 上传 CEF 运行时归档
         uses: actions/upload-artifact@v4
         with:
-          name: runtime-${{ matrix.package }}
-          path: dist/cef-screenshot-runtime-${{ matrix.package }}-v${{ steps.version.outputs.VERSION }}.tar.gz
+          name: runtime-${{ matrix.settings.target }}
+          path: dist/*.tar.gz
+          if-no-files-found: error
 
   # ─────────────────────────────────────────────────────────────────────────
   # 2. 创建 GitHub Release 并上传所有 CEF 运行时
   # ─────────────────────────────────────────────────────────────────────────
   github-release:
-    name: 创建 GitHub Release
+    name: GitHub Release
     runs-on: ubuntu-latest
     needs: build
 
@@ -228,46 +188,16 @@ jobs:
         with:
           files: dist/*.tar.gz
           generate_release_notes: true
-          body: |
-            ## 支持平台
-
-            | 平台 | npm 子包 |
-            |------|---------|
-            | Windows x64  | `cef-screenshot-win32-x64-msvc`     |
-            | Windows ARM64 | `cef-screenshot-win32-arm64-msvc`  |
-            | Linux x64    | `cef-screenshot-linux-x64-gnu`      |
-            | Linux ARM64  | `cef-screenshot-linux-arm64-gnu`    |
-            | Linux ARMv7  | `cef-screenshot-linux-arm-gnueabihf`|
-            | macOS x64    | `cef-screenshot-darwin-x64`         |
-            | macOS ARM64  | `cef-screenshot-darwin-arm64`       |
-
-            ## 安装
-
-            ```bash
-            npm install cef-screenshot
-            # 安装后会自动下载对应平台的 CEF 运行时
-            ```
 
   # ─────────────────────────────────────────────────────────────────────────
-  # 3. 发布各平台 npm 子包
+  # 3. 发布 npm 包（主包 + 所有平台子包）
+  #    napi prepublish 在 prepublishOnly 中自动发布所有子包
   # ─────────────────────────────────────────────────────────────────────────
-  publish-package:
-    name: 发布子包 ${{ matrix.package }}
+  publish:
+    name: Publish npm
     runs-on: ubuntu-latest
     needs: build
 
-    strategy:
-      fail-fast: false
-      matrix:
-        package:
-          - win32-x64-msvc
-          - win32-arm64-msvc
-          - linux-x64-gnu
-          - linux-arm64-gnu
-          - linux-arm-gnueabihf
-          - darwin-x64
-          - darwin-arm64
-
     steps:
       - name: 检出代码
         uses: actions/checkout@v4
@@ -275,49 +205,37 @@ jobs:
       - name: 安装 Node.js 22
         uses: actions/setup-node@v4
         with:
-          node-version: '22'
-          registry-url: 'https://registry.npmjs.org'
-
-      - name: 下载 .node 产物
-        uses: actions/download-artifact@v4
-        with:
-          name: node-${{ matrix.package }}
-          path: packages/${{ matrix.package }}/
-
-      - name: 发布 cef-screenshot-${{ matrix.package }}
-        working-directory: packages/${{ matrix.package }}
-        run: npm publish --provenance --access public
-        env:
-          NODE_AUTH_TOKEN: ${{ secrets.NPM_TOKEN }}
-
-  # ─────────────────────────────────────────────────────────────────────────
-  # 4. 发布主包（等所有子包发布完成后）
-  # ─────────────────────────────────────────────────────────────────────────
-  publish-main:
-    name: 发布主包 cef-screenshot
-    runs-on: ubuntu-latest
-    needs: publish-package
-
-    steps:
-      - name: 检出代码
-        uses: actions/checkout@v4
-
-      - name: 安装 Node.js 22
-        uses: actions/setup-node@v4
-        with:
-          node-version: '22'
-          registry-url: 'https://registry.npmjs.org'
+          node-version: 22
+          registry-url: https://registry.npmjs.org
 
       - name: 安装 pnpm
         uses: pnpm/action-setup@v4
         with:
-          version: '9'
+          version: 9
 
       - name: 安装依赖
         run: pnpm install --frozen-lockfile
 
-      - name: 发布 cef-screenshot
-        run: npm publish --provenance --access public
-        env:
-          NODE_AUTH_TOKEN: ${{ secrets.NPM_TOKEN }}
+      - name: 创建 npm 子包目录
+        run: pnpm exec napi create-npm-dirs
 
+      - name: 下载所有 .node 产物
+        uses: actions/download-artifact@v4
+        with:
+          path: artifacts
+          pattern: bindings-*
+
+      - name: 移动产物到 npm 子包
+        run: pnpm exec napi artifacts
+
+      - name: 列出 npm 子包内容
+        run: ls -R ./npm
+        shell: bash
+
+      - name: 发布到 npm
+        run: |
+          echo "//registry.npmjs.org/:_authToken=$NPM_TOKEN" >> ~/.npmrc
+          npm publish --provenance --access public
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          NPM_TOKEN: ${{ secrets.NPM_TOKEN }}

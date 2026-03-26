@@ -11,6 +11,9 @@ dist/
 *.tar.gz
 *.node
 
+# === napi-rs npm 子包（自动生成）===
+npm/
+
 # === pnpm ===
 .pnpm-store/
 package-lock.json

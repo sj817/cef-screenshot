@@ -107,12 +107,7 @@ function getCmakeConfig(): CmakeConfig {
     // 交叉编译场景
     if (TARGET_ARG === 'x86_64-pc-windows-msvc')  return { generator: 'Visual Studio 17 2022', arch: 'x64' }
     if (TARGET_ARG === 'aarch64-pc-windows-msvc') return { generator: 'Visual Studio 17 2022', arch: 'ARM64' }
-    if (TARGET_ARG === 'armv7-unknown-linux-gnueabihf') {
-      return {
-        generator: 'Ninja',
-        toolchain: join(ROOT_DIR, 'ci', 'toolchains', 'linux-arm-gnueabihf.cmake'),
-      }
-    }
+    // Linux 交叉编译统一使用 Ninja + CC/CXX 环境变量
     // 其余的和本机构建一致
   }
   // 本机构建

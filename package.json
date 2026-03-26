@@ -13,8 +13,8 @@
   },
   "files": [
     "index.ts",
+    "index.d.ts",
     "cef-screenshot.cjs",
-    "cef-screenshot.win32-x64-msvc.node",
     "scripts/postinstall.ts"
   ],
   "scripts": {
@@ -28,7 +28,10 @@
     "test:concurrent": "node --experimental-strip-types test/test-concurrent.ts",
     "benchmark": "node --experimental-strip-types benchmark/compare.ts",
     "interactive": "node --experimental-strip-types scripts/interactive.ts",
-    "typecheck": "tsc --noEmit"
+    "typecheck": "tsc --noEmit",
+    "artifacts": "napi artifacts",
+    "prepublishOnly": "napi prepublish -t npm --no-gh-release",
+    "version": "napi version"
   },
   "napi": {
     "name": "cef-screenshot",
