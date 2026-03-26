@@ -333,10 +333,31 @@ jobs:
         run: ls -R ./npm
         shell: bash
 
-      - name: 发布到 npm
+      - name: 检查 npm 认证
         run: |
-          npm publish --provenance --access public
+          echo "=== Node & npm 版本 ==="
+          node -v
+          npm -v
+          echo "=== .npmrc 内容 ==="
+          cat .npmrc
+          echo "=== npm whoami ==="
+          npm whoami 2>&1 || echo "::warning::npm whoami failed — 请检查 NPM_TOKEN 是否正确"
+          echo "=== npm config list ==="
+          npm config list
+        env:
+          NODE_AUTH_TOKEN: ${{ secrets.NPM_TOKEN }}
+
+      - name: 运行 napi prepublish（发布子包）
+        run: |
+          set -eux
+          npx napi prepublish -t npm --no-gh-release
+        env:
+          NODE_AUTH_TOKEN: ${{ secrets.NPM_TOKEN }}
+
+      - name: 发布主包到 npm
+        run: |
+          set -eux
+          npm publish --access public --ignore-scripts
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
-          NPM_TOKEN: ${{ secrets.NPM_TOKEN }}
           NODE_AUTH_TOKEN: ${{ secrets.NPM_TOKEN }}
