@@ -59,6 +59,9 @@ elseif(UNIX AND NOT APPLE)
     dl
     atomic
   )
+  # 交叉编译时，libcef.so 的间接依赖（ALSA、NSS、libudev、XCB 等）
+  # 在构建机器上不可用，允许共享库中的未定义符号（运行时目标机器上会有）
+  target_link_options(${PROJECT_NAME} PRIVATE "LINKER:--allow-shlib-undefined")
   # RPATH 使运行时能在同目录下找到 libcef.so
   set_target_properties(${PROJECT_NAME} PROPERTIES
     BUILD_RPATH  "$ORIGIN"
