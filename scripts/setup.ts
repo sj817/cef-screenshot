@@ -104,25 +104,53 @@ interface CmakeConfig {
 }
 
 function getCmakeConfig(): CmakeConfig {
-  if (TARGET_ARG) {
-    // 交叉编译场景
-    if (TARGET_ARG === 'x86_64-pc-windows-msvc')  return { generator: 'Visual Studio 17 2022', arch: 'x64' }
-    if (TARGET_ARG === 'aarch64-pc-windows-msvc') return { generator: 'Visual Studio 17 2022', arch: 'ARM64' }
-    // macOS 交叉编译（ARM64 主机编译 x86_64 或反之）
-    if (TARGET_ARG === 'x86_64-apple-darwin' && osPlatform() === 'darwin' && osArch() === 'arm64') {
-      return { generator: 'Ninja', extraDefines: ['CMAKE_OSX_ARCHITECTURES=x86_64'] }
-    }
-    if (TARGET_ARG === 'aarch64-apple-darwin' && osPlatform() === 'darwin' && osArch() === 'x64') {
-      return { generator: 'Ninja', extraDefines: ['CMAKE_OSX_ARCHITECTURES=arm64'] }
-    }
-    // Linux 交叉编译统一使用 Ninja + CC/CXX 环境变量
-    // 其余的和本机构建一致
+  // ── Windows ──────────────────────────────────────────────────────────
+  if (TARGET_ARG === 'x86_64-pc-windows-msvc' || TARGET_ARG === 'aarch64-pc-windows-msvc') {
+    const arch = TARGET_ARG.includes('aarch64') ? 'ARM64' : 'x64'
+    return { generator: 'Visual Studio 17 2022', arch }
   }
-  // 本机构建
-  if (osPlatform() === 'win32') {
-    const a = TARGET_ARG?.includes('arm64') ? 'ARM64' : 'x64'
+  if (!TARGET_ARG && osPlatform() === 'win32') {
+    const a = osArch() === 'arm64' ? 'ARM64' : 'x64'
     return { generator: 'Visual Studio 17 2022', arch: a }
   }
+
+  // ── macOS ────────────────────────────────────────────────────────────
+  if (TARGET_ARG?.includes('apple-darwin') || (!TARGET_ARG && osPlatform() === 'darwin')) {
+    const defines: string[] = []
+    // Homebrew prefix (ARM64: /opt/homebrew, Intel: /usr/local)
+    const brewPrefix = osArch() === 'arm64' ? '/opt/homebrew' : '/usr/local'
+    const prefixPaths = [brewPrefix]
+    // macOS x86_64 cross-compile on ARM64 host
+    if (TARGET_ARG === 'x86_64-apple-darwin' && osArch() === 'arm64') {
+      defines.push('CMAKE_OSX_ARCHITECTURES=x86_64')
+      // CI builds libpng for x86_64 at /tmp/libpng-x86_64
+      if (existsSync('/tmp/libpng-x86_64')) {
+        prefixPaths.unshift('/tmp/libpng-x86_64')
+      }
+    }
+    // macOS ARM64 cross-compile on Intel host
+    if (TARGET_ARG === 'aarch64-apple-darwin' && osArch() === 'x64') {
+      defines.push('CMAKE_OSX_ARCHITECTURES=arm64')
+    }
+    defines.push(`CMAKE_PREFIX_PATH=${prefixPaths.join(';')}`)
+    return { generator: 'Ninja', extraDefines: defines }
+  }
+
+  // ── Linux 交叉编译 ──────────────────────────────────────────────────
+  if (TARGET_ARG === 'aarch64-unknown-linux-gnu' && osPlatform() === 'linux' && osArch() !== 'arm64') {
+    return {
+      generator: 'Ninja',
+      toolchain: join(ROOT_DIR, 'ci', 'toolchains', 'aarch64-linux-gnu.cmake'),
+    }
+  }
+  if (TARGET_ARG === 'armv7-unknown-linux-gnueabihf' && osPlatform() === 'linux' && osArch() !== 'arm') {
+    return {
+      generator: 'Ninja',
+      toolchain: join(ROOT_DIR, 'ci', 'toolchains', 'armv7-linux-gnueabihf.cmake'),
+    }
+  }
+
+  // ── Linux 本机构建 ──────────────────────────────────────────────────
   return { generator: 'Ninja' }
 }
 
@@ -178,7 +206,12 @@ async function downloadCEF() {
     await download(CEF_URL, archivePath)
   }
   console.log('[CEF] 正在解压...')
-  execSync(`tar -xf "${archivePath}" -C "${THIRD_PARTY_DIR}"`, { stdio: 'inherit' })
+  // Windows CI 下 PATH 可能优先 Git Bash 的 GNU tar（缺少 bzip2），
+  // 使用系统 tar.exe（基于 libarchive，内置 bzip2 支持）
+  const tarCmd = osPlatform() === 'win32'
+    ? `"${process.env.SystemRoot || 'C:\\Windows'}\\System32\\tar.exe"`
+    : 'tar'
+  execSync(`${tarCmd} -xf "${archivePath}" -C "${THIRD_PARTY_DIR}"`, { stdio: 'inherit' })
   const cefExtDir = readdirSync(THIRD_PARTY_DIR).find(
     e => e.startsWith('cef_binary_') && statSync(join(THIRD_PARTY_DIR, e)).isDirectory()
   )

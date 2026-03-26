@@ -89,15 +89,40 @@ jobs:
         if: runner.os == 'Linux'
         run: |
           sudo apt-get update
-          sudo apt-get install -y \
-            libpng-dev \
-            ninja-build \
-            ${{ matrix.settings.cross_pkg }}
+          # 交叉编译目标需要对应架构的 libpng
+          case "${{ matrix.settings.target }}" in
+            aarch64-unknown-linux-gnu)
+              sudo dpkg --add-architecture arm64
+              sudo apt-get update
+              sudo apt-get install -y libpng-dev:arm64 ninja-build ${{ matrix.settings.cross_pkg }}
+              ;;
+            armv7-unknown-linux-gnueabihf)
+              sudo dpkg --add-architecture armhf
+              sudo apt-get update
+              sudo apt-get install -y libpng-dev:armhf ninja-build ${{ matrix.settings.cross_pkg }}
+              ;;
+            *)
+              sudo apt-get install -y libpng-dev ninja-build ${{ matrix.settings.cross_pkg }}
+              ;;
+          esac
 
       # ── macOS 系统依赖 ──────────────────────────────────────────
       - name: 安装 macOS 系统依赖
         if: runner.os == 'macOS'
         run: brew install ninja libpng
+
+      # ── macOS x86_64 交叉编译 libpng ────────────────────────────
+      - name: 构建 x86_64 libpng（macOS 交叉编译）
+        if: matrix.settings.target == 'x86_64-apple-darwin'
+        run: |
+          curl -sL "https://download.sourceforge.net/libpng/libpng-1.6.44.tar.xz" | tar xJ
+          cd libpng-1.6.44
+          cmake -B build -G Ninja \
+            -DCMAKE_OSX_ARCHITECTURES=x86_64 \
+            -DCMAKE_INSTALL_PREFIX=/tmp/libpng-x86_64 \
+            -DPNG_TESTS=OFF -DPNG_TOOLS=OFF
+          cmake --build build
+          cmake --install build
 
       # ── Node.js 依赖 ───────────────────────────────────────────
       - name: 安装 Node.js 依赖
@@ -129,7 +154,15 @@ jobs:
 
       # ── 构建 Rust Napi 绑定 ────────────────────────────────────
       - name: 构建 Rust Napi 绑定
-        run: pnpm exec napi build --platform --release --target ${{ matrix.settings.target }} --js cef-screenshot.cjs
+        run: |
+          # 设置 Linux 交叉编译链接器
+          if [ -n "${{ matrix.settings.cross_cc }}" ]; then
+            target_env=$(echo "${{ matrix.settings.target }}" | tr - _)
+            export "CC_${target_env}=${{ matrix.settings.cross_cc }}"
+            export "CXX_${target_env}=${{ matrix.settings.cross_cxx }}"
+            export "CARGO_TARGET_$(echo $target_env | tr '[:lower:]' '[:upper:]')_LINKER=${{ matrix.settings.cross_cc }}"
+          fi
+          pnpm exec napi build --platform --release --target ${{ matrix.settings.target }} --js cef-screenshot.cjs
         shell: bash
 
       # ── 上传产物 ───────────────────────────────────────────────
