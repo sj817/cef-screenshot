@@ -48,15 +48,6 @@
   "cef-screenshot": {
     "mirrorUrl": ""
   },
-  "optionalDependencies": {
-    "cef-screenshot-win32-x64-msvc": "^1.0.0",
-    "cef-screenshot-win32-arm64-msvc": "^1.0.0",
-    "cef-screenshot-linux-x64-gnu": "^1.0.0",
-    "cef-screenshot-linux-arm64-gnu": "^1.0.0",
-    "cef-screenshot-linux-arm-gnueabihf": "^1.0.0",
-    "cef-screenshot-darwin-x64": "^1.0.0",
-    "cef-screenshot-darwin-arm64": "^1.0.0"
-  },
   "devDependencies": {
     "@napi-rs/cli": "^2.18.0",
     "puppeteer": "^24.40.0",
