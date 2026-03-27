@@ -28,3 +28,5 @@ output/
 # === OS ===
 Thumbs.db
 .DS_Store
+/npm
+*.tgz
