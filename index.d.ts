@@ -6,8 +6,12 @@
 export interface InitOptions {
   /** Path to directory containing cef_screenshot_helper.exe + CEF runtime. */
   helperDir?: string
-  /** Number of concurrent browser slots (default 3, max 10). */
+  /** Number of concurrent browser slots (default 3, max 10). Kept for backward compatibility — equivalent to browsers=1, tabs=N. */
   concurrency?: number
+  /** Number of browser processes to spawn (default 1, max 5). Each process is an independent CEF instance with its own tabs. */
+  browsers?: number
+  /** Number of tabs (slots) per browser process (default 3, max 10). Total concurrency = browsers × tabs. */
+  tabs?: number
 }
 export interface ScreenshotOptions {
   /** Viewport width in pixels (default 1920). */

@@ -212,6 +212,11 @@ jobs:
           pnpm exec napi build --platform --release --target ${{ matrix.settings.target }} --js cef-screenshot.cjs
         shell: bash
 
+      # ── 打包 CEF 运行时归档 ────────────────────────────────────
+      - name: 打包 CEF 运行时归档
+        run: pnpm run pack:runtime -- --target=${{ matrix.settings.target }}
+        shell: bash
+
       # ── 上传产物 ───────────────────────────────────────────────
       - name: 上传 .node 产物
         uses: actions/upload-artifact@v4
@@ -219,3 +224,347 @@ jobs:
           name: bindings-${{ matrix.settings.target }}
           path: "*.node"
           if-no-files-found: error
+
+      - name: 上传 CEF 运行时归档
+        uses: actions/upload-artifact@v4
+        with:
+          name: runtime-${{ matrix.settings.target }}
+          path: dist/*.tar.gz
+          if-no-files-found: error
+
+  # ═══════════════════════════════════════════════════════════════════════════
+  # 包安装测试 — 在 Docker 容器中验证 Linux 平台
+  # ═══════════════════════════════════════════════════════════════════════════
+  test-linux:
+    name: Test ${{ matrix.name }}
+    needs: build
+    runs-on: ${{ matrix.runner }}
+    container: ${{ matrix.container }}
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - name: "Linux x64 (Ubuntu 22.04)"
+            runner: ubuntu-latest
+            container: "ubuntu:22.04"
+            target: x86_64-unknown-linux-gnu
+            npm_suffix: linux-x64-gnu
+          - name: "Linux x64 (Ubuntu 24.04)"
+            runner: ubuntu-latest
+            container: "ubuntu:24.04"
+            target: x86_64-unknown-linux-gnu
+            npm_suffix: linux-x64-gnu
+          - name: "Linux x64 (Debian 12)"
+            runner: ubuntu-latest
+            container: "debian:bookworm"
+            target: x86_64-unknown-linux-gnu
+            npm_suffix: linux-x64-gnu
+          - name: "Linux ARM64 (Ubuntu 22.04)"
+            runner: ubuntu-24.04-arm
+            container: "ubuntu:22.04"
+            target: aarch64-unknown-linux-gnu
+            npm_suffix: linux-arm64-gnu
+          - name: "Linux ARM64 (Ubuntu 24.04)"
+            runner: ubuntu-24.04-arm
+            container: "ubuntu:24.04"
+            target: aarch64-unknown-linux-gnu
+            npm_suffix: linux-arm64-gnu
+
+    steps:
+      - name: 安装容器依赖
+        run: |
+          apt-get update
+          apt-get install -y curl ca-certificates git xz-utils
+
+      - name: 检出代码
+        uses: actions/checkout@v6
+
+      - name: 安装 Node.js 22
+        uses: actions/setup-node@v6
+        with:
+          node-version: 22
+
+      - name: 下载 .node 绑定
+        uses: actions/download-artifact@v4
+        with:
+          name: bindings-${{ matrix.target }}
+          path: ./
+
+      - name: 下载 CEF 运行时归档
+        uses: actions/download-artifact@v4
+        with:
+          name: runtime-${{ matrix.target }}
+          path: ./dist/
+
+      - name: 构建并安装测试包
+        shell: bash
+        run: |
+          set -euo pipefail
+          NPM_SUFFIX="${{ matrix.npm_suffix }}"
+
+          # 将 .node 绑定和 CEF 运行时放入 npm 子包目录
+          cp *.node "npm/${NPM_SUFFIX}/"
+          tar -xzf dist/cef-screenshot-runtime-${NPM_SUFFIX}-v*.tar.gz -C "npm/${NPM_SUFFIX}/"
+          chmod +x "npm/${NPM_SUFFIX}/cef_screenshot_helper" 2>/dev/null || true
+          echo "=== 子包内容 ==="
+          ls -la "npm/${NPM_SUFFIX}/" | head -20
+
+          # 打包子包
+          cd "npm/${NPM_SUFFIX}"
+          SUB_TARBALL=$(npm pack 2>/dev/null | tail -1)
+          mv "${SUB_TARBALL}" /tmp/
+          cd ../..
+
+          # 打包主包
+          MAIN_TARBALL=$(npm pack 2>/dev/null | tail -1)
+          mv "${MAIN_TARBALL}" /tmp/
+
+          # 创建干净的测试项目
+          mkdir -p /tmp/test-project
+          cd /tmp/test-project
+          echo '{"name":"test-install","private":true}' > package.json
+
+          # 安装（npm install 会自动执行 postinstall 脚本）
+          echo ">>> npm install /tmp/${SUB_TARBALL} /tmp/${MAIN_TARBALL}"
+          npm install "/tmp/${SUB_TARBALL}" "/tmp/${MAIN_TARBALL}"
+
+          echo ""
+          echo "=== node_modules 顶层 ==="
+          ls node_modules/
+          echo "=== cef-screenshot 子包文件 ==="
+          ls "node_modules/cef-screenshot-${NPM_SUFFIX}/" | head -20
+
+      - name: 验证包安装
+        shell: bash
+        run: |
+          cd /tmp/test-project
+          node --input-type=module -e "
+            import { createRequire } from 'node:module';
+            import { existsSync } from 'node:fs';
+            import { dirname, join } from 'node:path';
+            const require = createRequire(import.meta.url);
+
+            // 1. 加载原生绑定
+            const binding = require('cef-screenshot/cef-screenshot.cjs');
+            console.log('✅ 原生绑定加载成功');
+            console.log('   导出:', Object.keys(binding));
+
+            // 2. 验证导出函数
+            for (const fn of ['init', 'screenshot', 'shutdown']) {
+              if (typeof binding[fn] !== 'function')
+                throw new Error('缺少导出函数: ' + fn);
+            }
+            console.log('✅ 所有导出函数存在');
+
+            // 3. 检查 CEF helper 二进制
+            const suffix = '${{ matrix.npm_suffix }}';
+            const pkgDir = dirname(require.resolve('cef-screenshot-' + suffix + '/package.json'));
+            const helperPath = join(pkgDir, 'cef_screenshot_helper');
+            if (!existsSync(helperPath)) {
+              throw new Error('CEF helper 不存在: ' + helperPath);
+            }
+            console.log('✅ CEF helper 二进制文件存在');
+
+            console.log('\n✅ 包安装验证全部通过！');
+          "
+
+  # ═══════════════════════════════════════════════════════════════════════════
+  # 包安装测试 — 原生运行器（Windows / macOS）
+  # ═══════════════════════════════════════════════════════════════════════════
+  test-native:
+    name: Test ${{ matrix.name }}
+    needs: build
+    runs-on: ${{ matrix.runner }}
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - name: "Windows x64"
+            runner: windows-latest
+            target: x86_64-pc-windows-msvc
+            npm_suffix: win32-x64-msvc
+            helper_name: cef_screenshot_helper.exe
+          - name: "macOS ARM64"
+            runner: macos-latest
+            target: aarch64-apple-darwin
+            npm_suffix: darwin-arm64
+            helper_name: cef_screenshot_helper
+          - name: "macOS x64"
+            runner: macos-13
+            target: x86_64-apple-darwin
+            npm_suffix: darwin-x64
+            helper_name: cef_screenshot_helper
+
+    steps:
+      - name: 检出代码
+        uses: actions/checkout@v6
+
+      - name: 安装 Node.js 22
+        uses: actions/setup-node@v6
+        with:
+          node-version: 22
+
+      - name: 下载 .node 绑定
+        uses: actions/download-artifact@v4
+        with:
+          name: bindings-${{ matrix.target }}
+          path: ./
+
+      - name: 下载 CEF 运行时归档
+        uses: actions/download-artifact@v4
+        with:
+          name: runtime-${{ matrix.target }}
+          path: ./dist/
+
+      - name: 构建并安装测试包
+        shell: bash
+        run: |
+          set -euo pipefail
+          NPM_SUFFIX="${{ matrix.npm_suffix }}"
+
+          # 将 .node 绑定和 CEF 运行时放入 npm 子包目录
+          cp *.node "npm/${NPM_SUFFIX}/"
+          tar -xzf dist/cef-screenshot-runtime-${NPM_SUFFIX}-v*.tar.gz -C "npm/${NPM_SUFFIX}/"
+          chmod +x "npm/${NPM_SUFFIX}/${{ matrix.helper_name }}" 2>/dev/null || true
+          echo "=== 子包内容 ==="
+          ls -la "npm/${NPM_SUFFIX}/" | head -20
+
+          # 打包子包
+          cd "npm/${NPM_SUFFIX}"
+          SUB_TARBALL=$(npm pack 2>/dev/null | tail -1)
+          mv "${SUB_TARBALL}" "$RUNNER_TEMP/"
+          cd ../..
+
+          # 打包主包
+          MAIN_TARBALL=$(npm pack 2>/dev/null | tail -1)
+          mv "${MAIN_TARBALL}" "$RUNNER_TEMP/"
+
+          # 创建干净的测试项目
+          TEST_DIR="$RUNNER_TEMP/test-project"
+          mkdir -p "$TEST_DIR"
+          cd "$TEST_DIR"
+          echo '{"name":"test-install","private":true}' > package.json
+
+          # 安装
+          echo ">>> npm install $RUNNER_TEMP/${SUB_TARBALL} $RUNNER_TEMP/${MAIN_TARBALL}"
+          npm install "$RUNNER_TEMP/${SUB_TARBALL}" "$RUNNER_TEMP/${MAIN_TARBALL}"
+
+          echo ""
+          echo "=== node_modules 顶层 ==="
+          ls node_modules/
+          echo "=== cef-screenshot 子包文件 ==="
+          ls "node_modules/cef-screenshot-${NPM_SUFFIX}/" | head -20
+
+      - name: 验证包安装
+        shell: bash
+        run: |
+          cd "$RUNNER_TEMP/test-project"
+          node --input-type=module -e "
+            import { createRequire } from 'node:module';
+            import { existsSync } from 'node:fs';
+            import { dirname, join } from 'node:path';
+            const require = createRequire(import.meta.url);
+
+            // 1. 加载原生绑定
+            const binding = require('cef-screenshot/cef-screenshot.cjs');
+            console.log('✅ 原生绑定加载成功');
+            console.log('   导出:', Object.keys(binding));
+
+            // 2. 验证导出函数
+            for (const fn of ['init', 'screenshot', 'shutdown']) {
+              if (typeof binding[fn] !== 'function')
+                throw new Error('缺少导出函数: ' + fn);
+            }
+            console.log('✅ 所有导出函数存在');
+
+            // 3. 检查 CEF helper 二进制
+            const suffix = '${{ matrix.npm_suffix }}';
+            const pkgDir = dirname(require.resolve('cef-screenshot-' + suffix + '/package.json'));
+            const helperName = '${{ matrix.helper_name }}';
+            const helperPath = join(pkgDir, helperName);
+            if (!existsSync(helperPath)) {
+              throw new Error('CEF helper 不存在: ' + helperPath);
+            }
+            console.log('✅ CEF helper 二进制文件存在');
+
+            console.log('\n✅ 包安装验证全部通过！');
+          "
+
+  # ═══════════════════════════════════════════════════════════════════════════
+  # 产物结构验证 — 无法原生运行的交叉编译目标
+  # ═══════════════════════════════════════════════════════════════════════════
+  test-structural:
+    name: Verify ${{ matrix.target }} (structural)
+    needs: build
+    runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - target: aarch64-pc-windows-msvc
+            npm_suffix: win32-arm64-msvc
+            helper_name: cef_screenshot_helper.exe
+          - target: armv7-unknown-linux-gnueabihf
+            npm_suffix: linux-arm-gnueabihf
+            helper_name: cef_screenshot_helper
+
+    steps:
+      - name: 检出代码
+        uses: actions/checkout@v6
+
+      - name: 下载 .node 绑定
+        uses: actions/download-artifact@v4
+        with:
+          name: bindings-${{ matrix.target }}
+          path: ./bindings/
+
+      - name: 下载 CEF 运行时归档
+        uses: actions/download-artifact@v4
+        with:
+          name: runtime-${{ matrix.target }}
+          path: ./dist/
+
+      - name: 验证产物结构
+        shell: bash
+        run: |
+          set -euo pipefail
+
+          echo "=== .node 绑定 ==="
+          ls -la bindings/
+          NODE_FILE=$(ls bindings/*.node)
+          echo "✅ .node 文件存在: ${NODE_FILE}"
+          FILE_SIZE=$(stat -c%s "$NODE_FILE" 2>/dev/null || stat -f%z "$NODE_FILE")
+          echo "   大小: $((FILE_SIZE / 1024)) KB"
+
+          echo ""
+          echo "=== CEF 运行时归档 ==="
+          TARBALL=$(ls dist/*.tar.gz)
+          echo "归档: ${TARBALL}"
+          TARBALL_SIZE=$(stat -c%s "$TARBALL" 2>/dev/null || stat -f%z "$TARBALL")
+          echo "大小: $((TARBALL_SIZE / 1024 / 1024)) MB"
+
+          # 解压并检查结构
+          mkdir -p /tmp/runtime-check
+          tar -xzf "${TARBALL}" -C /tmp/runtime-check/
+          echo ""
+          echo "=== 运行时内容 ==="
+          ls -la /tmp/runtime-check/ | head -30
+
+          # 验证 helper 和关键文件存在
+          HELPER="/tmp/runtime-check/${{ matrix.helper_name }}"
+          if [ ! -f "$HELPER" ]; then
+            echo "❌ CEF helper 不存在: ${{ matrix.helper_name }}"
+            exit 1
+          fi
+          echo "✅ CEF helper 存在: ${{ matrix.helper_name }}"
+
+          # 验证子包 package.json 结构
+          PKG="npm/${{ matrix.npm_suffix }}/package.json"
+          if [ ! -f "$PKG" ]; then
+            echo "❌ 子包 package.json 不存在: $PKG"
+            exit 1
+          fi
+          echo "✅ 子包 package.json 存在"
+
+          echo ""
+          echo "✅ 产物结构验证通过！"

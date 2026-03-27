@@ -9,7 +9,7 @@ use tokio::process::{Child, ChildStdin, ChildStdout, Command};
 use tokio::sync::{oneshot, Mutex};
 
 // ---------------------------------------------------------------------------
-// Internal: shared helper process state
+// Internal: single helper process state
 // ---------------------------------------------------------------------------
 struct HelperInner {
     child: Mutex<Child>,
@@ -17,9 +17,18 @@ struct HelperInner {
     pending: Arc<Mutex<HashMap<u32, oneshot::Sender<std::result::Result<String, String>>>>>,
     next_id: AtomicU32,
     _reader_handle: tokio::task::JoinHandle<()>,
+    /// Tracks active in-flight requests for least-busy routing
+    active_count: AtomicU32,
 }
 
-static HELPER: std::sync::LazyLock<Mutex<Option<Arc<HelperInner>>>> =
+// ---------------------------------------------------------------------------
+// Internal: pool of helper processes (multi-browser support)
+// ---------------------------------------------------------------------------
+struct HelperPool {
+    helpers: Vec<Arc<HelperInner>>,
+}
+
+static POOL: std::sync::LazyLock<Mutex<Option<Arc<HelperPool>>>> =
     std::sync::LazyLock::new(|| Mutex::new(None));
 
 // ---------------------------------------------------------------------------
@@ -69,7 +78,14 @@ pub struct InitOptions {
     /// Path to directory containing cef_screenshot_helper.exe + CEF runtime.
     pub helper_dir: Option<String>,
     /// Number of concurrent browser slots (default 3, max 10).
+    /// Kept for backward compatibility — equivalent to browsers=1, tabs=N.
     pub concurrency: Option<u32>,
+    /// Number of browser processes to spawn (default 1, max 5).
+    /// Each process is an independent CEF instance with its own tabs.
+    pub browsers: Option<u32>,
+    /// Number of tabs (slots) per browser process (default 3, max 10).
+    /// Total concurrency = browsers × tabs.
+    pub tabs: Option<u32>,
 }
 
 #[napi(object)]
@@ -105,37 +121,16 @@ fn resolve_helper_dir(custom: Option<String>) -> PathBuf {
 }
 
 // ---------------------------------------------------------------------------
-// Public API
+// Spawn a single helper process
 // ---------------------------------------------------------------------------
-
-#[napi]
-pub async fn init(options: Option<InitOptions>) -> Result<()> {
-    let mut guard = HELPER.lock().await;
-    if guard.is_some() {
-        return Err(Error::from_reason(
-            "Already initialized. Call shutdown() first.",
-        ));
-    }
-
-    let concurrency = options
-        .as_ref()
-        .and_then(|o| o.concurrency)
-        .unwrap_or(3)
-        .max(1)
-        .min(10);
-
-    let helper_dir = resolve_helper_dir(options.and_then(|o| o.helper_dir));
-    let exe = helper_dir.join(HELPER_EXE_NAME);
-    if !exe.exists() {
-        return Err(Error::from_reason(format!(
-            "Helper not found: {}  (run `npm run setup` or `node scripts/postinstall.js`)",
-            exe.display()
-        )));
-    }
-
-    let mut child = Command::new(&exe)
-        .arg(format!("--pool={concurrency}"))
-        .current_dir(&helper_dir)
+async fn spawn_helper(
+    exe: &std::path::Path,
+    helper_dir: &std::path::Path,
+    tabs: u32,
+) -> Result<HelperInner> {
+    let mut child = Command::new(exe)
+        .arg(format!("--pool={tabs}"))
+        .current_dir(helper_dir)
         .stdin(std::process::Stdio::piped())
         .stdout(std::process::Stdio::piped())
         .stderr(std::process::Stdio::inherit())
@@ -167,33 +162,28 @@ pub async fn init(options: Option<InitOptions>) -> Result<()> {
     let pending_clone = Arc::clone(&pending);
     let reader_handle = tokio::spawn(response_reader(ready_stdout, pending_clone));
 
-    *guard = Some(Arc::new(HelperInner {
+    Ok(HelperInner {
         child: Mutex::new(child),
         stdin: Mutex::new(stdin),
         pending,
         next_id: AtomicU32::new(1),
         _reader_handle: reader_handle,
-    }));
-
-    Ok(())
+        active_count: AtomicU32::new(0),
+    })
 }
 
-#[napi]
-pub async fn screenshot(url: String, options: Option<ScreenshotOptions>) -> Result<Buffer> {
-    // Clone Arc and release global lock immediately to allow concurrency
-    let inner = {
-        let guard = HELPER.lock().await;
-        Arc::clone(
-            guard
-                .as_ref()
-                .ok_or_else(|| Error::from_reason("Not initialized - call init() first"))?,
-        )
-    };
-
+// ---------------------------------------------------------------------------
+// Internal: send a screenshot request to a specific helper
+// ---------------------------------------------------------------------------
+async fn do_screenshot(
+    inner: &HelperInner,
+    url: &str,
+    options: Option<&ScreenshotOptions>,
+) -> Result<Buffer> {
     let id = inner.next_id.fetch_add(1, Ordering::Relaxed);
-    let width = options.as_ref().and_then(|o| o.width).unwrap_or(1920);
-    let height = options.as_ref().and_then(|o| o.height).unwrap_or(1080);
-    let delay = options.as_ref().and_then(|o| o.delay).unwrap_or(500);
+    let width = options.and_then(|o| o.width).unwrap_or(1920);
+    let height = options.and_then(|o| o.height).unwrap_or(1080);
+    let delay = options.and_then(|o| o.delay).unwrap_or(500);
 
     // Register response channel
     let (tx, rx) = oneshot::channel();
@@ -236,15 +226,93 @@ pub async fn screenshot(url: String, options: Option<ScreenshotOptions>) -> Resu
     }
 }
 
+// ---------------------------------------------------------------------------
+// Public API
+// ---------------------------------------------------------------------------
+
+#[napi]
+pub async fn init(options: Option<InitOptions>) -> Result<()> {
+    let mut guard = POOL.lock().await;
+    if guard.is_some() {
+        return Err(Error::from_reason(
+            "Already initialized. Call shutdown() first.",
+        ));
+    }
+
+    // Resolve browsers & tabs configuration
+    let (browsers, tabs) = match &options {
+        // New multi-browser API takes priority
+        Some(opts) if opts.browsers.is_some() || opts.tabs.is_some() => {
+            let b = opts.browsers.unwrap_or(1).max(1).min(5);
+            let t = opts.tabs.unwrap_or(3).max(1).min(10);
+            (b, t)
+        }
+        // Backward compat: concurrency → 1 browser with N tabs
+        Some(opts) => {
+            let c = opts.concurrency.unwrap_or(3).max(1).min(10);
+            (1u32, c)
+        }
+        None => (1u32, 3u32),
+    };
+
+    let helper_dir = resolve_helper_dir(options.and_then(|o| o.helper_dir));
+    let exe = helper_dir.join(HELPER_EXE_NAME);
+    if !exe.exists() {
+        return Err(Error::from_reason(format!(
+            "Helper not found: {}  (run `npm run setup` or `node scripts/postinstall.js`)",
+            exe.display()
+        )));
+    }
+
+    let mut helpers = Vec::with_capacity(browsers as usize);
+    for _ in 0..browsers {
+        let inner = spawn_helper(&exe, &helper_dir, tabs).await?;
+        helpers.push(Arc::new(inner));
+    }
+
+    *guard = Some(Arc::new(HelperPool { helpers }));
+
+    Ok(())
+}
+
+#[napi]
+pub async fn screenshot(url: String, options: Option<ScreenshotOptions>) -> Result<Buffer> {
+    // Clone Arc and release global lock immediately to allow concurrency
+    let pool = {
+        let guard = POOL.lock().await;
+        Arc::clone(
+            guard
+                .as_ref()
+                .ok_or_else(|| Error::from_reason("Not initialized - call init() first"))?,
+        )
+    };
+
+    // Least-busy routing: pick the helper with fewest active requests
+    let inner = pool
+        .helpers
+        .iter()
+        .min_by_key(|h| h.active_count.load(Ordering::Relaxed))
+        .map(Arc::clone)
+        .ok_or_else(|| Error::from_reason("No helpers available"))?;
+
+    inner.active_count.fetch_add(1, Ordering::Relaxed);
+    let result = do_screenshot(&inner, &url, options.as_ref()).await;
+    inner.active_count.fetch_sub(1, Ordering::Relaxed);
+
+    result
+}
+
 #[napi]
 pub async fn shutdown() -> Result<()> {
-    let mut guard = HELPER.lock().await;
-    if let Some(inner) = guard.take() {
-        // Close stdin → helper detects EOF → exits
-        drop(inner.stdin.lock().await);
-        let mut child = inner.child.lock().await;
-        let _ = tokio::time::timeout(std::time::Duration::from_secs(5), child.wait()).await;
-        let _ = child.kill().await;
+    let mut guard = POOL.lock().await;
+    if let Some(pool) = guard.take() {
+        for helper in &pool.helpers {
+            // Close stdin → helper detects EOF → exits
+            drop(helper.stdin.lock().await);
+            let mut child = helper.child.lock().await;
+            let _ = tokio::time::timeout(std::time::Duration::from_secs(5), child.wait()).await;
+            let _ = child.kill().await;
+        }
     }
     Ok(())
 }
