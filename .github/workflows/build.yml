@@ -301,7 +301,7 @@ jobs:
         env:
           npm_config_engine_strict: "false"
         run: |
-          set -eo pipefail
+          set -eox pipefail
           NPM_SUFFIX="${{ matrix.npm_suffix }}"
           echo "[info] npm_suffix=${NPM_SUFFIX}"
           echo "[info] node=$(node -v), npm=$(npm -v)"
@@ -316,7 +316,7 @@ jobs:
 
           echo ">>> Step 2: npm pack 子包"
           cd "npm/${NPM_SUFFIX}"
-          npm pack --loglevel=warn
+          npm pack --loglevel=verbose 2>&1
           SUB_TARBALL=$(ls *.tgz 2>/dev/null | head -1)
           if [ -z "${SUB_TARBALL}" ]; then echo "ERROR: sub-package npm pack produced no tarball"; ls -la; exit 1; fi
           echo "[info] sub tarball: ${SUB_TARBALL} ($(du -h "${SUB_TARBALL}" | cut -f1))"
@@ -324,7 +324,7 @@ jobs:
           cd ../..
 
           echo ">>> Step 3: npm pack 主包"
-          npm pack --loglevel=warn
+          npm pack --loglevel=verbose 2>&1
           MAIN_TARBALL=$(ls *.tgz 2>/dev/null | head -1)
           if [ -z "${MAIN_TARBALL}" ]; then echo "ERROR: main package npm pack produced no tarball"; ls -la; exit 1; fi
           echo "[info] main tarball: ${MAIN_TARBALL} ($(du -h "${MAIN_TARBALL}" | cut -f1))"
@@ -334,7 +334,8 @@ jobs:
           mkdir -p /tmp/test-project
           cd /tmp/test-project
           echo '{"name":"test-install","private":true}' > package.json
-          npm install "/tmp/${SUB_TARBALL}" "/tmp/${MAIN_TARBALL}"
+          echo 'engine-strict=false' > .npmrc
+          npm install "/tmp/${SUB_TARBALL}" "/tmp/${MAIN_TARBALL}" --loglevel=verbose 2>&1
 
           echo ""
           echo "=== node_modules 顶层 ==="
@@ -375,6 +376,25 @@ jobs:
 
             console.log('\n✅ 包安装验证全部通过！');
           "
+
+      - name: 输出调试信息（失败时）
+        if: failure()
+        shell: bash
+        run: |
+          echo "## 测试失败调试信息" >> "$GITHUB_STEP_SUMMARY"
+          echo '```' >> "$GITHUB_STEP_SUMMARY"
+          echo "=== npm 日志 ===" >> "$GITHUB_STEP_SUMMARY"
+          cat ~/.npm/_logs/*.log >> "$GITHUB_STEP_SUMMARY" 2>/dev/null || echo "No npm logs found" >> "$GITHUB_STEP_SUMMARY"
+          echo "" >> "$GITHUB_STEP_SUMMARY"
+          echo "=== /tmp/test-project 内容 ===" >> "$GITHUB_STEP_SUMMARY"
+          ls -la /tmp/test-project/ >> "$GITHUB_STEP_SUMMARY" 2>/dev/null || echo "No test-project dir" >> "$GITHUB_STEP_SUMMARY"
+          echo "" >> "$GITHUB_STEP_SUMMARY"
+          echo "=== /tmp/test-project/node_modules ===" >> "$GITHUB_STEP_SUMMARY"
+          ls -la /tmp/test-project/node_modules/ >> "$GITHUB_STEP_SUMMARY" 2>/dev/null || echo "No node_modules" >> "$GITHUB_STEP_SUMMARY"
+          echo "" >> "$GITHUB_STEP_SUMMARY"
+          echo "=== /tmp/*.tgz 文件 ===" >> "$GITHUB_STEP_SUMMARY"
+          ls -la /tmp/*.tgz >> "$GITHUB_STEP_SUMMARY" 2>/dev/null || echo "No tgz files in /tmp" >> "$GITHUB_STEP_SUMMARY"
+          echo '```' >> "$GITHUB_STEP_SUMMARY"
 
   # ═══════════════════════════════════════════════════════════════════════════
   # 包安装测试 — 原生运行器（Windows / macOS）
@@ -424,7 +444,7 @@ jobs:
         env:
           npm_config_engine_strict: "false"
         run: |
-          set -eo pipefail
+          set -eox pipefail
           NPM_SUFFIX="${{ matrix.npm_suffix }}"
           echo "[info] npm_suffix=${NPM_SUFFIX}"
           echo "[info] node=$(node -v), npm=$(npm -v)"
@@ -440,7 +460,7 @@ jobs:
 
           echo ">>> Step 2: npm pack 子包"
           cd "npm/${NPM_SUFFIX}"
-          npm pack --loglevel=warn
+          npm pack --loglevel=verbose 2>&1
           SUB_TARBALL=$(ls *.tgz 2>/dev/null | head -1)
           if [ -z "${SUB_TARBALL}" ]; then echo "ERROR: sub-package npm pack produced no tarball"; ls -la; exit 1; fi
           echo "[info] sub tarball: ${SUB_TARBALL} ($(du -h "${SUB_TARBALL}" | cut -f1))"
@@ -448,7 +468,7 @@ jobs:
           cd ../..
 
           echo ">>> Step 3: npm pack 主包"
-          npm pack --loglevel=warn
+          npm pack --loglevel=verbose 2>&1
           MAIN_TARBALL=$(ls *.tgz 2>/dev/null | head -1)
           if [ -z "${MAIN_TARBALL}" ]; then echo "ERROR: main package npm pack produced no tarball"; ls -la; exit 1; fi
           echo "[info] main tarball: ${MAIN_TARBALL} ($(du -h "${MAIN_TARBALL}" | cut -f1))"
@@ -459,7 +479,8 @@ jobs:
           mkdir -p "$TEST_DIR"
           cd "$TEST_DIR"
           echo '{"name":"test-install","private":true}' > package.json
-          npm install "$RUNNER_TEMP/${SUB_TARBALL}" "$RUNNER_TEMP/${MAIN_TARBALL}"
+          echo 'engine-strict=false' > .npmrc
+          npm install "$RUNNER_TEMP/${SUB_TARBALL}" "$RUNNER_TEMP/${MAIN_TARBALL}" --loglevel=verbose 2>&1
 
           echo ""
           echo "=== node_modules 顶层 ==="
@@ -501,6 +522,26 @@ jobs:
 
             console.log('\n✅ 包安装验证全部通过！');
           "
+
+      - name: 输出调试信息（失败时）
+        if: failure()
+        shell: bash
+        run: |
+          echo "## 测试失败调试信息" >> "$GITHUB_STEP_SUMMARY"
+          echo '```' >> "$GITHUB_STEP_SUMMARY"
+          TEST_DIR="$RUNNER_TEMP/test-project"
+          echo "=== npm 日志 ===" >> "$GITHUB_STEP_SUMMARY"
+          cat ~/.npm/_logs/*.log >> "$GITHUB_STEP_SUMMARY" 2>/dev/null || echo "No npm logs found" >> "$GITHUB_STEP_SUMMARY"
+          echo "" >> "$GITHUB_STEP_SUMMARY"
+          echo "=== test-project 内容 ===" >> "$GITHUB_STEP_SUMMARY"
+          ls -la "$TEST_DIR/" >> "$GITHUB_STEP_SUMMARY" 2>/dev/null || echo "No test-project dir" >> "$GITHUB_STEP_SUMMARY"
+          echo "" >> "$GITHUB_STEP_SUMMARY"
+          echo "=== node_modules ===" >> "$GITHUB_STEP_SUMMARY"
+          ls -la "$TEST_DIR/node_modules/" >> "$GITHUB_STEP_SUMMARY" 2>/dev/null || echo "No node_modules" >> "$GITHUB_STEP_SUMMARY"
+          echo "" >> "$GITHUB_STEP_SUMMARY"
+          echo "=== tgz 文件 ===" >> "$GITHUB_STEP_SUMMARY"
+          ls -la "$RUNNER_TEMP/"*.tgz >> "$GITHUB_STEP_SUMMARY" 2>/dev/null || echo "No tgz files" >> "$GITHUB_STEP_SUMMARY"
+          echo '```' >> "$GITHUB_STEP_SUMMARY"
 
   # ═══════════════════════════════════════════════════════════════════════════
   # 产物结构验证 — 无法原生运行的交叉编译目标
