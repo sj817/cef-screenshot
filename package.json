@@ -15,7 +15,7 @@
     "index.ts",
     "index.d.ts",
     "cef-screenshot.cjs",
-    "scripts/postinstall.ts"
+    "scripts/postinstall.mjs"
   ],
   "scripts": {
     "setup": "node --experimental-strip-types scripts/setup.ts",
@@ -23,7 +23,7 @@
     "build": "napi build --platform --release --js cef-screenshot.cjs",
     "build:debug": "napi build --platform --js cef-screenshot.cjs",
     "pack:runtime": "node --experimental-strip-types scripts/pack.ts",
-    "postinstall": "node --experimental-strip-types scripts/postinstall.ts",
+    "postinstall": "node scripts/postinstall.mjs",
     "test": "node --experimental-strip-types test/test.ts",
     "test:concurrent": "node --experimental-strip-types test/test-concurrent.ts",
     "benchmark": "node --experimental-strip-types benchmark/compare.ts",
