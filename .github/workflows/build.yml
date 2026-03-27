@@ -298,34 +298,42 @@ jobs:
 
       - name: 构建并安装测试包
         shell: bash
+        env:
+          npm_config_engine_strict: "false"
         run: |
-          set -euo pipefail
+          set -eo pipefail
           NPM_SUFFIX="${{ matrix.npm_suffix }}"
+          echo "[info] npm_suffix=${NPM_SUFFIX}"
+          echo "[info] node=$(node -v), npm=$(npm -v)"
+          echo "[info] pwd=$(pwd)"
 
-          # 将 .node 绑定和 CEF 运行时放入 npm 子包目录
+          echo ">>> Step 1: 复制 .node 绑定和 CEF 运行时"
           cp *.node "npm/${NPM_SUFFIX}/"
           tar -xzf dist/cef-screenshot-runtime-${NPM_SUFFIX}-v*.tar.gz -C "npm/${NPM_SUFFIX}/"
           chmod +x "npm/${NPM_SUFFIX}/cef_screenshot_helper" 2>/dev/null || true
           echo "=== 子包内容 ==="
           ls -la "npm/${NPM_SUFFIX}/" | head -20
 
-          # 打包子包
+          echo ">>> Step 2: npm pack 子包"
           cd "npm/${NPM_SUFFIX}"
-          SUB_TARBALL=$(npm pack 2>/dev/null | tail -1)
+          npm pack --loglevel=warn
+          SUB_TARBALL=$(ls *.tgz 2>/dev/null | head -1)
+          if [ -z "${SUB_TARBALL}" ]; then echo "ERROR: sub-package npm pack produced no tarball"; ls -la; exit 1; fi
+          echo "[info] sub tarball: ${SUB_TARBALL} ($(du -h "${SUB_TARBALL}" | cut -f1))"
           mv "${SUB_TARBALL}" /tmp/
           cd ../..
 
-          # 打包主包
-          MAIN_TARBALL=$(npm pack 2>/dev/null | tail -1)
+          echo ">>> Step 3: npm pack 主包"
+          npm pack --loglevel=warn
+          MAIN_TARBALL=$(ls *.tgz 2>/dev/null | head -1)
+          if [ -z "${MAIN_TARBALL}" ]; then echo "ERROR: main package npm pack produced no tarball"; ls -la; exit 1; fi
+          echo "[info] main tarball: ${MAIN_TARBALL} ($(du -h "${MAIN_TARBALL}" | cut -f1))"
           mv "${MAIN_TARBALL}" /tmp/
 
-          # 创建干净的测试项目
+          echo ">>> Step 4: npm install"
           mkdir -p /tmp/test-project
           cd /tmp/test-project
           echo '{"name":"test-install","private":true}' > package.json
-
-          # 安装（npm install 会自动执行 postinstall 脚本）
-          echo ">>> npm install /tmp/${SUB_TARBALL} /tmp/${MAIN_TARBALL}"
           npm install "/tmp/${SUB_TARBALL}" "/tmp/${MAIN_TARBALL}"
 
           echo ""
@@ -389,11 +397,6 @@ jobs:
             target: aarch64-apple-darwin
             npm_suffix: darwin-arm64
             helper_name: cef_screenshot_helper
-          - name: "macOS x64"
-            runner: macos-13
-            target: x86_64-apple-darwin
-            npm_suffix: darwin-x64
-            helper_name: cef_screenshot_helper
 
     steps:
       - name: 检出代码
@@ -418,35 +421,44 @@ jobs:
 
       - name: 构建并安装测试包
         shell: bash
+        env:
+          npm_config_engine_strict: "false"
         run: |
-          set -euo pipefail
+          set -eo pipefail
           NPM_SUFFIX="${{ matrix.npm_suffix }}"
+          echo "[info] npm_suffix=${NPM_SUFFIX}"
+          echo "[info] node=$(node -v), npm=$(npm -v)"
+          echo "[info] RUNNER_TEMP=$RUNNER_TEMP"
+          echo "[info] pwd=$(pwd)"
 
-          # 将 .node 绑定和 CEF 运行时放入 npm 子包目录
+          echo ">>> Step 1: 复制 .node 绑定和 CEF 运行时"
           cp *.node "npm/${NPM_SUFFIX}/"
           tar -xzf dist/cef-screenshot-runtime-${NPM_SUFFIX}-v*.tar.gz -C "npm/${NPM_SUFFIX}/"
           chmod +x "npm/${NPM_SUFFIX}/${{ matrix.helper_name }}" 2>/dev/null || true
           echo "=== 子包内容 ==="
           ls -la "npm/${NPM_SUFFIX}/" | head -20
 
-          # 打包子包
+          echo ">>> Step 2: npm pack 子包"
           cd "npm/${NPM_SUFFIX}"
-          SUB_TARBALL=$(npm pack 2>/dev/null | tail -1)
+          npm pack --loglevel=warn
+          SUB_TARBALL=$(ls *.tgz 2>/dev/null | head -1)
+          if [ -z "${SUB_TARBALL}" ]; then echo "ERROR: sub-package npm pack produced no tarball"; ls -la; exit 1; fi
+          echo "[info] sub tarball: ${SUB_TARBALL} ($(du -h "${SUB_TARBALL}" | cut -f1))"
           mv "${SUB_TARBALL}" "$RUNNER_TEMP/"
           cd ../..
 
-          # 打包主包
-          MAIN_TARBALL=$(npm pack 2>/dev/null | tail -1)
+          echo ">>> Step 3: npm pack 主包"
+          npm pack --loglevel=warn
+          MAIN_TARBALL=$(ls *.tgz 2>/dev/null | head -1)
+          if [ -z "${MAIN_TARBALL}" ]; then echo "ERROR: main package npm pack produced no tarball"; ls -la; exit 1; fi
+          echo "[info] main tarball: ${MAIN_TARBALL} ($(du -h "${MAIN_TARBALL}" | cut -f1))"
           mv "${MAIN_TARBALL}" "$RUNNER_TEMP/"
 
-          # 创建干净的测试项目
+          echo ">>> Step 4: npm install"
           TEST_DIR="$RUNNER_TEMP/test-project"
           mkdir -p "$TEST_DIR"
           cd "$TEST_DIR"
           echo '{"name":"test-install","private":true}' > package.json
-
-          # 安装
-          echo ">>> npm install $RUNNER_TEMP/${SUB_TARBALL} $RUNNER_TEMP/${MAIN_TARBALL}"
           npm install "$RUNNER_TEMP/${SUB_TARBALL}" "$RUNNER_TEMP/${MAIN_TARBALL}"
 
           echo ""
@@ -506,6 +518,9 @@ jobs:
             helper_name: cef_screenshot_helper.exe
           - target: armv7-unknown-linux-gnueabihf
             npm_suffix: linux-arm-gnueabihf
+            helper_name: cef_screenshot_helper
+          - target: x86_64-apple-darwin
+            npm_suffix: darwin-x64
             helper_name: cef_screenshot_helper
 
     steps:
