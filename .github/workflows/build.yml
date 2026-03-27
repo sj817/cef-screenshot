@@ -347,11 +347,9 @@ jobs:
         shell: bash
         run: |
           cd /tmp/test-project
-          node --input-type=module -e "
-            import { createRequire } from 'node:module';
-            import { existsSync } from 'node:fs';
-            import { dirname, join } from 'node:path';
-            const require = createRequire(import.meta.url);
+          node -e "
+            const { existsSync } = require('fs');
+            const { dirname, join } = require('path');
 
             // 1. 加载原生绑定
             const binding = require('cef-screenshot/cef-screenshot.cjs');
@@ -492,11 +490,9 @@ jobs:
         shell: bash
         run: |
           cd "$RUNNER_TEMP/test-project"
-          node --input-type=module -e "
-            import { createRequire } from 'node:module';
-            import { existsSync } from 'node:fs';
-            import { dirname, join } from 'node:path';
-            const require = createRequire(import.meta.url);
+          node -e "
+            const { existsSync } = require('fs');
+            const { dirname, join } = require('path');
 
             // 1. 加载原生绑定
             const binding = require('cef-screenshot/cef-screenshot.cjs');
