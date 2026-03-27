@@ -91,6 +91,41 @@ function calcDirSize(dir: string): number {
   return bytes
 }
 
+/** 对 Linux ELF 二进制执行 strip --strip-unneeded，大幅缩减调试符号体积 */
+function stripLinuxBinaries() {
+  if (!target.includes('linux')) return
+
+  // 确定正确的 strip 工具（交叉编译时使用对应前缀）
+  let stripCmd = 'strip'
+  if (target === 'armv7-unknown-linux-gnueabihf' && osPlatform() === 'linux' && osArch() !== 'arm') {
+    stripCmd = 'arm-linux-gnueabihf-strip'
+  } else if (target === 'aarch64-unknown-linux-gnu' && osPlatform() === 'linux' && osArch() !== 'arm64') {
+    stripCmd = 'aarch64-linux-gnu-strip'
+  }
+
+  const candidates = readdirSync(RELEASE_DIR).filter(f => {
+    const fp = join(RELEASE_DIR, f)
+    if (!statSync(fp).isFile()) return false
+    return f.endsWith('.so') || f.endsWith('.so.1') || f === 'cef_screenshot_helper' || f === 'chrome-sandbox'
+  })
+
+  if (candidates.length === 0) return
+
+  console.log(`[strip] 使用 ${stripCmd} 剥离 ${candidates.length} 个 ELF 二进制的调试符号...`)
+  for (const f of candidates) {
+    const fp = join(RELEASE_DIR, f)
+    const sizeBefore = statSync(fp).size
+    try {
+      execSync(`${stripCmd} --strip-unneeded "${fp}"`, { stdio: 'pipe' })
+      const sizeAfter = statSync(fp).size
+      const saved = ((1 - sizeAfter / sizeBefore) * 100).toFixed(1)
+      console.log(`  ${f}: ${(sizeBefore / 1024 / 1024).toFixed(1)} MB → ${(sizeAfter / 1024 / 1024).toFixed(1)} MB (−${saved}%)`)
+    } catch (err: any) {
+      console.warn(`  [warn] strip ${f} 失败: ${err.message?.split('\n')[0]}`)
+    }
+  }
+}
+
 function main() {
   console.log(`[pack] target: ${target}`)
   console.log(`[pack] cefPlatform: ${cefPlatform}`)
@@ -120,6 +155,9 @@ function main() {
     console.error(`错误：未找到 ${cefLibName}，CEF 运行时文件尚未复制到 Release/ 目录。`)
     process.exit(1)
   }
+
+  // 在打包前剥离 Linux ELF 二进制的调试符号
+  stripLinuxBinaries()
 
   mkdirSync(DIST_DIR, { recursive: true })
 

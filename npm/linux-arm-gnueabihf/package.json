@@ -1,6 +1,6 @@
 {
   "name": "cef-screenshot-linux-arm-gnueabihf",
-  "version": "0.1.5",
+  "version": "0.1.6",
   "os": [
     "linux"
   ],
@@ -8,9 +8,6 @@
     "arm"
   ],
   "main": "cef-screenshot.linux-arm-gnueabihf.node",
-  "files": [
-    "cef-screenshot.linux-arm-gnueabihf.node"
-  ],
   "description": "基于 CEF 离屏渲染的超低内存网页截图工具",
   "license": "MIT",
   "engines": {

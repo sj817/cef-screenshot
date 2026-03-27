@@ -296,6 +296,41 @@ jobs:
       - name: 移动产物到 npm 子包
         run: pnpm exec napi artifacts
 
+      - name: 下载所有 CEF 运行时归档
+        uses: actions/download-artifact@v4
+        with:
+          pattern: runtime-*
+          path: runtime-artifacts/
+          merge-multiple: true
+
+      - name: 解压 CEF 运行时到 npm 子包
+        shell: bash
+        run: |
+          echo "=== 可用的运行时归档 ==="
+          ls -lh runtime-artifacts/
+          for tarball in runtime-artifacts/*.tar.gz; do
+            basename=$(basename "$tarball")
+            # 从文件名提取平台后缀：cef-screenshot-runtime-{suffix}-v{version}.tar.gz
+            suffix=$(echo "$basename" | sed 's/cef-screenshot-runtime-//;s/-v[0-9].*//')
+            target_dir="npm/${suffix}"
+            if [ -d "$target_dir" ]; then
+              echo "解压 $basename → $target_dir/"
+              tar -xzf "$tarball" -C "$target_dir"
+              echo "  文件数: $(find "$target_dir" -type f | wc -l)"
+              echo "  总大小: $(du -sh "$target_dir" | cut -f1)"
+            else
+              echo "::warning::找不到目标目录 $target_dir（需要 $suffix）"
+            fi
+          done
+          echo ""
+          echo "=== npm 子包包含的文件 ==="
+          for d in npm/*/; do
+            echo "--- $d ---"
+            ls -lh "$d" | head -15
+            file_count=$(find "$d" -type f | wc -l)
+            [ "$file_count" -gt 15 ] && echo "  ... 共 $file_count 个文件"
+          done
+
       - name: 列出 npm 子包内容
         run: ls -R ./npm
         shell: bash

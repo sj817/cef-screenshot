@@ -1,6 +1,6 @@
 {
   "name": "cef-screenshot-win32-arm64-msvc",
-  "version": "0.1.5",
+  "version": "0.1.6",
   "os": [
     "win32"
   ],
@@ -8,9 +8,6 @@
     "arm64"
   ],
   "main": "cef-screenshot.win32-arm64-msvc.node",
-  "files": [
-    "cef-screenshot.win32-arm64-msvc.node"
-  ],
   "description": "基于 CEF 离屏渲染的超低内存网页截图工具",
   "license": "MIT",
   "engines": {
