@@ -9,7 +9,9 @@
     ".": {
       "types": "./index.ts",
       "default": "./index.ts"
-    }
+    },
+    "./cef-screenshot.cjs": "./cef-screenshot.cjs",
+    "./package.json": "./package.json"
   },
   "files": [
     "index.ts",
