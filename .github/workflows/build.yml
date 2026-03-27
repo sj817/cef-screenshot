@@ -259,11 +259,6 @@ jobs:
             container: "debian:bookworm"
             target: x86_64-unknown-linux-gnu
             npm_suffix: linux-x64-gnu
-          - name: "Linux ARM64 (Ubuntu 22.04)"
-            runner: ubuntu-24.04-arm
-            container: "ubuntu:22.04"
-            target: aarch64-unknown-linux-gnu
-            npm_suffix: linux-arm64-gnu
           - name: "Linux ARM64 (Ubuntu 24.04)"
             runner: ubuntu-24.04-arm
             container: "ubuntu:24.04"
