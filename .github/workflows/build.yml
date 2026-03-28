@@ -346,8 +346,8 @@ jobs:
             const { existsSync } = require('fs');
             const { dirname, join } = require('path');
 
-            // 1. 加载原生绑定
-            const binding = require('cef-screenshot/cef-screenshot.cjs');
+            // 1. 加载原生绑定（直接路径，不依赖 exports subpath）
+            const binding = require('./node_modules/cef-screenshot/cef-screenshot.cjs');
             console.log('✅ 原生绑定加载成功');
             console.log('   导出:', Object.keys(binding));
 
@@ -489,8 +489,8 @@ jobs:
             const { existsSync } = require('fs');
             const { dirname, join } = require('path');
 
-            // 1. 加载原生绑定
-            const binding = require('cef-screenshot/cef-screenshot.cjs');
+            // 1. 加载原生绑定（直接路径，不依赖 exports subpath）
+            const binding = require('./node_modules/cef-screenshot/cef-screenshot.cjs');
             console.log('✅ 原生绑定加载成功');
             console.log('   导出:', Object.keys(binding));
 
@@ -513,6 +513,22 @@ jobs:
 
             console.log('\n✅ 包安装验证全部通过！');
           "
+
+      - name: 集成测试（真实截图）
+        shell: bash
+        timeout-minutes: 5
+        run: |
+          cd "$RUNNER_TEMP/test-project"
+          cp "$GITHUB_WORKSPACE/test/integration.mjs" .
+          node --experimental-strip-types integration.mjs
+
+      - name: 上传截图产物（调试用）
+        if: failure()
+        uses: actions/upload-artifact@v4
+        with:
+          name: integration-screenshot-${{ matrix.npm_suffix }}
+          path: ${{ runner.temp }}/test-project/test-screenshot.png
+          if-no-files-found: ignore
 
       - name: 输出调试信息（失败时）
         if: failure()
