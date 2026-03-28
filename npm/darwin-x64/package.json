@@ -1,6 +1,6 @@
 {
   "name": "cef-screenshot-darwin-x64",
-  "version": "0.1.6",
+  "version": "0.1.9",
   "os": [
     "darwin"
   ],
