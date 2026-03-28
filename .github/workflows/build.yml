@@ -209,7 +209,12 @@ jobs:
             export "CXX_${target_env}=${{ matrix.settings.cross_cxx }}"
             export "CARGO_TARGET_$(echo $target_env | tr '[:lower:]' '[:upper:]')_LINKER=${{ matrix.settings.cross_cc }}"
           fi
-          pnpm exec napi build --platform --release --target ${{ matrix.settings.target }} --js cef-screenshot.cjs
+          pnpm exec napi build --platform --release --target ${{ matrix.settings.target }} --js false
+        shell: bash
+
+      # ── 编译 TypeScript 入口文件 ────────────────────────────
+      - name: 编译 TypeScript 入口文件
+        run: pnpm exec tsc -p tsconfig.build.json
         shell: bash
 
       # ── 打包 CEF 运行时归档 ────────────────────────────────────
@@ -222,7 +227,10 @@ jobs:
         uses: actions/upload-artifact@v4
         with:
           name: bindings-${{ matrix.settings.target }}
-          path: "*.node"
+          path: |
+            *.node
+            index.js
+            index.d.ts
           if-no-files-found: error
 
       - name: 上传 CEF 运行时归档
@@ -340,35 +348,13 @@ jobs:
 
       - name: 验证包安装
         shell: bash
+        env:
+          NPM_SUFFIX: ${{ matrix.npm_suffix }}
+          SKIP_SCREENSHOT: "1"
         run: |
           cd /tmp/test-project
-          node -e "
-            const { existsSync } = require('fs');
-            const { dirname, join } = require('path');
-
-            // 1. 加载原生绑定（直接路径，不依赖 exports subpath）
-            const binding = require('./node_modules/cef-screenshot/cef-screenshot.cjs');
-            console.log('✅ 原生绑定加载成功');
-            console.log('   导出:', Object.keys(binding));
-
-            // 2. 验证导出函数
-            for (const fn of ['init', 'screenshot', 'shutdown']) {
-              if (typeof binding[fn] !== 'function')
-                throw new Error('缺少导出函数: ' + fn);
-            }
-            console.log('✅ 所有导出函数存在');
-
-            // 3. 检查 CEF helper 二进制
-            const suffix = '${{ matrix.npm_suffix }}';
-            const pkgDir = dirname(require.resolve('cef-screenshot-' + suffix + '/package.json'));
-            const helperPath = join(pkgDir, 'cef_screenshot_helper');
-            if (!existsSync(helperPath)) {
-              throw new Error('CEF helper 不存在: ' + helperPath);
-            }
-            console.log('✅ CEF helper 二进制文件存在');
-
-            console.log('\n✅ 包安装验证全部通过！');
-          "
+          cp "$GITHUB_WORKSPACE/test/verify-install.mjs" .
+          node verify-install.mjs
 
       - name: 输出调试信息（失败时）
         if: failure()
@@ -481,46 +467,16 @@ jobs:
           echo "=== cef-screenshot 子包文件 ==="
           ls "node_modules/cef-screenshot-${NPM_SUFFIX}/" | head -20
 
-      - name: 验证包安装
-        shell: bash
-        run: |
-          cd "$RUNNER_TEMP/test-project"
-          node -e "
-            const { existsSync } = require('fs');
-            const { dirname, join } = require('path');
-
-            // 1. 加载原生绑定（直接路径，不依赖 exports subpath）
-            const binding = require('./node_modules/cef-screenshot/cef-screenshot.cjs');
-            console.log('✅ 原生绑定加载成功');
-            console.log('   导出:', Object.keys(binding));
-
-            // 2. 验证导出函数
-            for (const fn of ['init', 'screenshot', 'shutdown']) {
-              if (typeof binding[fn] !== 'function')
-                throw new Error('缺少导出函数: ' + fn);
-            }
-            console.log('✅ 所有导出函数存在');
-
-            // 3. 检查 CEF helper 二进制
-            const suffix = '${{ matrix.npm_suffix }}';
-            const pkgDir = dirname(require.resolve('cef-screenshot-' + suffix + '/package.json'));
-            const helperName = '${{ matrix.helper_name }}';
-            const helperPath = join(pkgDir, helperName);
-            if (!existsSync(helperPath)) {
-              throw new Error('CEF helper 不存在: ' + helperPath);
-            }
-            console.log('✅ CEF helper 二进制文件存在');
-
-            console.log('\n✅ 包安装验证全部通过！');
-          "
-
-      - name: 集成测试（真实截图）
+      - name: 验证包安装 + 真实截图
         shell: bash
         timeout-minutes: 5
+        env:
+          NPM_SUFFIX: ${{ matrix.npm_suffix }}
+          HELPER_NAME: ${{ matrix.helper_name }}
         run: |
           cd "$RUNNER_TEMP/test-project"
-          cp "$GITHUB_WORKSPACE/test/integration.mjs" .
-          node --experimental-strip-types integration.mjs
+          cp "$GITHUB_WORKSPACE/test/verify-install.mjs" .
+          node verify-install.mjs
 
       - name: 上传截图产物（调试用）
         if: failure()

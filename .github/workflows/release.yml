@@ -214,7 +214,12 @@ jobs:
             export "CXX_${target_env}=${{ matrix.settings.cross_cxx }}"
             export "CARGO_TARGET_$(echo $target_env | tr '[:lower:]' '[:upper:]')_LINKER=${{ matrix.settings.cross_cc }}"
           fi
-          pnpm exec napi build --platform --release --target ${{ matrix.settings.target }} --js cef-screenshot.cjs
+          pnpm exec napi build --platform --release --target ${{ matrix.settings.target }} --js false
+        shell: bash
+
+      # ── 编译 TypeScript 入口文件 ────────────────────────────
+      - name: 编译 TypeScript 入口文件
+        run: pnpm exec tsc -p tsconfig.build.json
         shell: bash
 
       # ── 打包 CEF 运行时归档 ────────────────────────────────────
@@ -227,7 +232,10 @@ jobs:
         uses: actions/upload-artifact@v4
         with:
           name: bindings-${{ matrix.settings.target }}
-          path: "*.node"
+          path: |
+            *.node
+            index.js
+            index.d.ts
           if-no-files-found: error
 
       - name: 上传 CEF 运行时归档
@@ -364,6 +372,10 @@ jobs:
           echo "$output"
         env:
           NODE_AUTH_TOKEN: ${{ secrets.NPM_TOKEN }}
+
+      - name: 编译 TypeScript 入口文件
+        run: pnpm exec tsc -p tsconfig.build.json
+        shell: bash
 
       - name: 发布主包到 npm
         run: |

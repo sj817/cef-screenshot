@@ -10,6 +10,8 @@ dist/
 *.tar.bz2
 *.tar.gz
 *.node
+index.js
+index.d.ts
 
 # === napi-rs npm 子包（.node 文件在构建时生成，不提交）===
 

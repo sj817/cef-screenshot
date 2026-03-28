@@ -3,23 +3,25 @@
   "version": "0.1.8",
   "description": "基于 CEF 离屏渲染的超低内存网页截图工具",
   "type": "module",
-  "main": "index.ts",
-  "types": "index.ts",
+  "main": "index.js",
+  "types": "index.d.ts",
   "exports": {
-    ".": "./index.ts",
+    ".": {
+      "types": "./index.d.ts",
+      "import": "./index.js"
+    },
     "./package.json": "./package.json"
   },
   "files": [
-    "index.ts",
+    "index.js",
     "index.d.ts",
-    "cef-screenshot.cjs",
     "scripts/postinstall.mjs"
   ],
   "scripts": {
     "setup": "node --experimental-strip-types scripts/setup.ts",
     "setup:cpp": "node --experimental-strip-types scripts/setup.ts --cpp-only",
-    "build": "napi build --platform --release --js cef-screenshot.cjs",
-    "build:debug": "napi build --platform --js cef-screenshot.cjs",
+    "build": "napi build --platform --release --js false && tsc -p tsconfig.build.json",
+    "build:debug": "napi build --platform --js false && tsc -p tsconfig.build.json",
     "pack:runtime": "node --experimental-strip-types scripts/pack.ts",
     "postinstall": "node scripts/postinstall.mjs",
     "test": "node --experimental-strip-types test/test.ts",

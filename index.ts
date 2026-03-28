@@ -1,5 +1,5 @@
 // index.ts — CEF Screenshot 主入口
-// 封装 napi-rs 原生绑定，提供 TypeScript 类型声明
+// 纯 TypeScript 实现，通过 createRequire 直接加载 .node 原生绑定
 
 import { createRequire } from 'node:module'
 import { dirname, join } from 'node:path'
@@ -45,40 +45,60 @@ interface NativeBinding {
   shutdown(): Promise<void>
 }
 
-// 延迟加载原生绑定，确保报错信息友好
 const _require = createRequire(import.meta.url)
 const __dirname = dirname(fileURLToPath(import.meta.url))
-let _native: NativeBinding | null = null
 
-function getNative(): NativeBinding {
-  if (_native) return _native
-  try {
-    // napi build --js cef-screenshot.cjs 生成的 CJS 平台检测文件
-    _native = _require('./cef-screenshot.cjs') as NativeBinding
-    return _native
-  } catch (e: any) {
-    throw new Error(
-      `无法加载原生绑定，请先运行 pnpm run build 编译项目\n` +
-      `原始错误: ${e.message}`
-    )
-  }
-}
-
-// ── 自动解析 CEF 运行时所在目录 ──────────────────────────────────────────
-const PLATFORM_PKG_MAP: Record<string, Record<string, string>> = {
+// ── 平台 → .node 文件后缀映射（仅支持的目标） ────────────────────────────
+const PLATFORM_SUFFIX: Record<string, Record<string, string>> = {
   win32:  { x64: 'win32-x64-msvc', arm64: 'win32-arm64-msvc' },
   linux:  { x64: 'linux-x64-gnu', arm64: 'linux-arm64-gnu', arm: 'linux-arm-gnueabihf' },
   darwin: { x64: 'darwin-x64', arm64: 'darwin-arm64' },
 }
 
+let _native: NativeBinding | null = null
+
+function loadNativeBinding(): NativeBinding {
+  const suffix = PLATFORM_SUFFIX[process.platform]?.[process.arch]
+  if (!suffix) {
+    throw new Error(
+      `不支持的平台: ${process.platform}-${process.arch}\n` +
+      `支持的平台: win32-x64, win32-arm64, linux-x64, linux-arm64, linux-arm, darwin-x64, darwin-arm64`
+    )
+  }
+
+  // 1. 尝试加载本地 .node 文件（开发环境）
+  const localFile = join(__dirname, `cef-screenshot.${suffix}.node`)
+  if (existsSync(localFile)) {
+    return _require(localFile)
+  }
+
+  // 2. 尝试加载 npm 平台子包
+  try {
+    return _require(`cef-screenshot-${suffix}`)
+  } catch (e: any) {
+    throw new Error(
+      `无法加载原生绑定 cef-screenshot-${suffix}\n` +
+      `请确认已安装对应平台的子包，或先运行 pnpm run build 编译项目\n` +
+      `原始错误: ${e.message}`
+    )
+  }
+}
+
+function getNative(): NativeBinding {
+  if (_native) return _native
+  _native = loadNativeBinding()
+  return _native
+}
+
+// ── 自动解析 CEF 运行时所在目录 ──────────────────────────────────────────
 const HELPER_NAME = process.platform === 'win32'
   ? 'cef_screenshot_helper.exe'
   : 'cef_screenshot_helper'
 
 function resolveHelperDir(): string | undefined {
-  // 1. npm 安装：从 cef-screenshot-{platform} 平台子包中寻找 CEF 运行时
-  const suffix = PLATFORM_PKG_MAP[process.platform]?.[process.arch]
+  const suffix = PLATFORM_SUFFIX[process.platform]?.[process.arch]
   if (suffix) {
+    // 1. npm 安装：从 cef-screenshot-{platform} 平台子包中寻找 CEF 运行时
     try {
       const pkgDir = dirname(_require.resolve(`cef-screenshot-${suffix}/package.json`))
       if (existsSync(join(pkgDir, HELPER_NAME))) return pkgDir
