@@ -473,6 +473,7 @@ jobs:
         env:
           NPM_SUFFIX: ${{ matrix.npm_suffix }}
           HELPER_NAME: ${{ matrix.helper_name }}
+          SKIP_SCREENSHOT: ${{ runner.os == 'macOS' && '1' || '' }}
         run: |
           cd "$RUNNER_TEMP/test-project"
           cp "$GITHUB_WORKSPACE/test/verify-install.mjs" .
