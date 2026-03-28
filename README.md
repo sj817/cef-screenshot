@@ -118,6 +118,47 @@ await shutdown()
 | `width` | `number` | `1920` | 视窗宽度（像素） |
 | `height` | `number` | `1080` | 视窗高度（像素） |
 | `delay` | `number` | `500` | 页面 `load` 事件后额外等待时间（毫秒） |
+| `selector` | `string` | — | CSS 选择器，截图指定元素 |
+| `fullPage` | `boolean` | `true` | 是否截取完整页面（含滚动区域） |
+| `sliceHeight` | `number` | — | 分片高度（像素），设置后返回 `Buffer[]` |
+
+#### 全页截图（默认行为）
+
+默认自动检测页面完整高度，截取包含滚动区域在内的完整页面。设置 `fullPage: false` 可回退到仅截取视窗可见区域。
+
+```ts
+// 截取完整页面（包含滚动区域）
+const buf = await screenshot('https://example.com')
+
+// 仅截取视窗可见区域
+const buf2 = await screenshot('https://example.com', { fullPage: false })
+```
+
+#### 元素选择器截图
+
+使用 CSS 选择器截取页面上的指定元素：
+
+```ts
+const buf = await screenshot('https://example.com', {
+  selector: '#main-content',
+  width: 1280,
+  height: 800,
+})
+```
+
+#### 分片截图
+
+将长截图按指定高度切分为多张图片，相邻分片重叠 100px 以保证视觉连续性：
+
+```ts
+const slices = await screenshot('https://example.com', {
+  sliceHeight: 1200,  // 每片 1200px 高
+})
+// slices: Buffer[] — 每个元素为一张 PNG
+for (let i = 0; i < slices.length; i++) {
+  writeFileSync(`page_${i}.png`, slices[i])
+}
+```
 
 ### `shutdown()`
 

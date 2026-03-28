@@ -35,7 +35,8 @@ if (!process.env.SKIP_SCREENSHOT) {
   console.log('初始化 CEF...')
   await init({ browsers: 1, tabs: 1 })
 
-  console.log('截图 https://example.com ...')
+  // 4a. 基础全页截图
+  console.log('截图 https://example.com（全页）...')
   const buf = await screenshot('https://example.com', {
     width: 1280,
     height: 800,
@@ -45,7 +46,26 @@ if (!process.env.SKIP_SCREENSHOT) {
 
   const { size } = statSync('test-screenshot.png')
   if (size === 0) throw new Error('截图文件为空!')
-  console.log(`✅ 截图成功: ${size} bytes`)
+  console.log(`✅ 全页截图成功: ${size} bytes`)
+
+  // 4b. 元素选择器截图
+  console.log('截图 https://example.com（元素: h1）...')
+  const elemBuf = await screenshot('https://example.com', {
+    width: 1280, height: 800, delay: 2000,
+    selector: 'h1',
+  })
+  writeFileSync('test-screenshot-element.png', elemBuf)
+  if (elemBuf.length === 0) throw new Error('元素截图为空!')
+  console.log(`✅ 元素截图成功: ${elemBuf.length} bytes`)
+
+  // 4c. 分片截图
+  console.log('截图 https://example.com（分片: 400px）...')
+  const slices = await screenshot('https://example.com', {
+    width: 1280, height: 800, delay: 2000,
+    sliceHeight: 400,
+  })
+  if (!Array.isArray(slices) || slices.length === 0) throw new Error('分片截图返回异常!')
+  console.log(`✅ 分片截图成功: ${slices.length} 片`)
 
   await shutdown()
 }

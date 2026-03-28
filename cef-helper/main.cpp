@@ -157,6 +157,50 @@ bool SaveBGRA_AsPNG(const std::string& path, const void* bgra_data, int w, int h
 
 #endif  // _WIN32
 
+// ── String split helper ─────────────────────────────────────────────────
+std::vector<std::string> SplitString(const std::string& s, char delim) {
+  std::vector<std::string> parts;
+  size_t start = 0;
+  for (size_t i = 0; i <= s.size(); i++) {
+    if (i == s.size() || s[i] == delim) {
+      parts.push_back(s.substr(start, i - start));
+      start = i + 1;
+    }
+  }
+  return parts;
+}
+
+// ── Slice range computation ─────────────────────────────────────────────
+struct SliceRange { int y_start; int y_end; };
+
+std::vector<SliceRange> ComputeSlices(int totalH, int sliceH, int overlap = 100) {
+  std::vector<SliceRange> result;
+  if (totalH <= sliceH) {
+    result.push_back({0, totalH});
+    return result;
+  }
+  int y = 0;
+  while (y + sliceH < totalH) {
+    result.push_back({y, y + sliceH});
+    y += sliceH - overlap;
+  }
+  // Last slice fills full sliceH height
+  result.push_back({std::max(0, totalH - sliceH), totalH});
+  return result;
+}
+
+// ── Pixel buffer crop helper ────────────────────────────────────────────
+void CropPixelBuffer(const std::vector<uint8_t>& src, int srcW, int /*srcH*/,
+                     int cropX, int cropY, int cropW, int cropH,
+                     std::vector<uint8_t>& dst) {
+  dst.resize((size_t)cropW * cropH * 4);
+  for (int y = 0; y < cropH; y++) {
+    size_t srcOff = ((size_t)(cropY + y) * srcW + cropX) * 4;
+    size_t dstOff = (size_t)y * cropW * 4;
+    std::memcpy(dst.data() + dstOff, src.data() + srcOff, (size_t)cropW * 4);
+  }
+}
+
 } // namespace
 
 // ========================================================
@@ -167,13 +211,30 @@ struct ScreenshotRequest {
   int width = 1920;
   int height = 1080;
   int delay_ms = 500;
+  bool full_page = false;
+  std::string selector;
+  int slice_height = 0;
   std::string url;
 };
 
 // ========================================================
 // Browser Slot
 // ========================================================
-enum class SlotState { CREATING, IDLE, LOADING, RENDERING };
+enum class SlotState { CREATING, IDLE, LOADING, MEASURING, RESIZING, RENDERING };
+
+// Measurement result from JavaScript
+struct MeasureResult {
+  int scroll_w = 0;
+  int scroll_h = 0;
+  int elem_x = 0;
+  int elem_y = 0;
+  int elem_w = 0;
+  int elem_h = 0;
+  bool has_element = false;
+  bool js_executed = false;
+  bool done = false;
+  std::string error;
+};
 
 struct BrowserSlot {
   int                     index = -1;
@@ -191,6 +252,8 @@ struct BrowserSlot {
   int                     pixel_h = 0;
   int                     view_w = 1920;
   int                     view_h = 1080;
+
+  MeasureResult           measure;
 };
 
 // ========================================================
@@ -318,11 +381,13 @@ class ScreenshotApp : public CefApp, public CefBrowserProcessHandler {
 class ScreenshotClient : public CefClient,
                           public CefRenderHandler,
                           public CefLoadHandler,
-                          public CefLifeSpanHandler {
+                          public CefLifeSpanHandler,
+                          public CefDisplayHandler {
  public:
   CefRefPtr<CefRenderHandler>   GetRenderHandler()   override { return this; }
   CefRefPtr<CefLoadHandler>     GetLoadHandler()     override { return this; }
   CefRefPtr<CefLifeSpanHandler> GetLifeSpanHandler() override { return this; }
+  CefRefPtr<CefDisplayHandler>  GetDisplayHandler()  override { return this; }
 
   // --- CefRenderHandler ---
   void GetViewRect(CefRefPtr<CefBrowser> browser, CefRect& rect) override {
@@ -392,6 +457,38 @@ class ScreenshotClient : public CefClient,
     }
   }
 
+  // --- CefDisplayHandler ---
+  void OnTitleChange(CefRefPtr<CefBrowser> browser,
+                     const CefString& title) override {
+    auto* slot = FindSlot(browser);
+    if (!slot || slot->state != SlotState::MEASURING) return;
+
+    std::string t = title.ToString();
+    if (t.size() >= 8 && t.substr(0, 8) == "MEASURE|") {
+      auto parts = SplitString(t, '|');
+      if (parts.size() >= 3) {
+        try {
+          slot->measure.scroll_w = std::stoi(parts[1]);
+          slot->measure.scroll_h = std::stoi(parts[2]);
+          if (parts.size() >= 7) {
+            slot->measure.elem_x = std::stoi(parts[3]);
+            slot->measure.elem_y = std::stoi(parts[4]);
+            slot->measure.elem_w = std::stoi(parts[5]);
+            slot->measure.elem_h = std::stoi(parts[6]);
+            slot->measure.has_element = true;
+          }
+          slot->measure.done = true;
+        } catch (...) {
+          slot->measure.error = "Failed to parse measurement data";
+          slot->measure.done = true;
+        }
+      }
+    } else if (t.size() >= 14 && t.substr(0, 14) == "MEASURE_ERROR|") {
+      slot->measure.error = t.substr(14);
+      slot->measure.done = true;
+    }
+  }
+
   // --- CefLifeSpanHandler ---
   void OnAfterCreated(CefRefPtr<CefBrowser> browser) override {
     for (auto& slot : g_slots) {
@@ -424,22 +521,30 @@ void StdinReaderThread() {
     if (line.empty()) continue;
     if (!line.empty() && line.back() == '\r') line.pop_back();
 
+    // Parse: ID\tWIDTH\tHEIGHT\tDELAY_MS\tFULL_PAGE\tSELECTOR\tSLICE_HEIGHT\tURL
     size_t p1 = line.find('\t');
     size_t p2 = (p1 != std::string::npos) ? line.find('\t', p1 + 1) : std::string::npos;
     size_t p3 = (p2 != std::string::npos) ? line.find('\t', p2 + 1) : std::string::npos;
     size_t p4 = (p3 != std::string::npos) ? line.find('\t', p3 + 1) : std::string::npos;
+    size_t p5 = (p4 != std::string::npos) ? line.find('\t', p4 + 1) : std::string::npos;
+    size_t p6 = (p5 != std::string::npos) ? line.find('\t', p5 + 1) : std::string::npos;
+    size_t p7 = (p6 != std::string::npos) ? line.find('\t', p6 + 1) : std::string::npos;
 
-    if (p4 == std::string::npos) continue;
+    if (p7 == std::string::npos) continue;
 
     ScreenshotRequest req;
     try {
-      req.id       = std::stoi(line.substr(0, p1));
-      req.width    = std::stoi(line.substr(p1 + 1, p2 - p1 - 1));
-      req.height   = std::stoi(line.substr(p2 + 1, p3 - p2 - 1));
-      req.delay_ms = std::stoi(line.substr(p3 + 1, p4 - p3 - 1));
-      req.url      = line.substr(p4 + 1);
+      req.id         = std::stoi(line.substr(0, p1));
+      req.width      = std::stoi(line.substr(p1 + 1, p2 - p1 - 1));
+      req.height     = std::stoi(line.substr(p2 + 1, p3 - p2 - 1));
+      req.delay_ms   = std::stoi(line.substr(p3 + 1, p4 - p3 - 1));
+      req.full_page  = line.substr(p4 + 1, p5 - p4 - 1) == "1";
+      req.selector   = line.substr(p5 + 1, p6 - p5 - 1);
+      req.slice_height = std::stoi(line.substr(p6 + 1, p7 - p6 - 1));
+      req.url        = line.substr(p7 + 1);
     } catch (...) { continue; }
 
+    if (req.selector == "-") req.selector.clear();
     if (req.width  < 1) req.width  = 1920;
     if (req.height < 1) req.height = 1080;
     if (req.delay_ms < 0) req.delay_ms = 0;
@@ -466,13 +571,124 @@ void TickSlot(BrowserSlot& slot) {
       auto sec = std::chrono::duration_cast<std::chrono::seconds>(elapsed).count();
 
       if (slot.page_loaded) {
-        slot.state    = SlotState::RENDERING;
-        slot.state_ts = std::chrono::steady_clock::now();
+        // Decide next state based on full_page / selector
+        bool need_measure = slot.request.full_page || !slot.request.selector.empty();
+        if (need_measure) {
+          slot.measure = MeasureResult{};  // reset
+          slot.state    = SlotState::MEASURING;
+          slot.state_ts = std::chrono::steady_clock::now();
+        } else {
+          slot.state    = SlotState::RENDERING;
+          slot.state_ts = std::chrono::steady_clock::now();
+        }
       } else if (sec >= 30) {
         Respond(slot.request.id, false, "timeout waiting for page load");
         if (slot.browser)
           slot.browser->GetMainFrame()->LoadURL("about:blank");
         slot.state = SlotState::IDLE;
+      }
+      break;
+    }
+
+    case SlotState::MEASURING: {
+      if (!slot.measure.js_executed) {
+        // Build and execute measurement JavaScript
+        std::string js;
+        if (slot.request.selector.empty()) {
+          // Full page: just measure scroll dimensions
+          js = "(function(){"
+               "var sh=Math.max(document.documentElement.scrollHeight,"
+                 "document.body?document.body.scrollHeight:0,"
+                 "document.documentElement.offsetHeight,"
+                 "document.body?document.body.offsetHeight:0);"
+               "var sw=Math.max(document.documentElement.scrollWidth,"
+                 "document.body?document.body.scrollWidth:0);"
+               "document.title='MEASURE|'+sw+'|'+sh;"
+               "})();";
+        } else {
+          // Selector: measure scroll dims + element bounds
+          // Escape single quotes in selector for safety
+          std::string safe_sel = slot.request.selector;
+          for (size_t i = 0; i < safe_sel.size(); i++) {
+            if (safe_sel[i] == '\'') {
+              safe_sel.insert(i, "\\");
+              i++;
+            }
+          }
+          js = "(function(){"
+               "var sh=Math.max(document.documentElement.scrollHeight,"
+                 "document.body?document.body.scrollHeight:0,"
+                 "document.documentElement.offsetHeight,"
+                 "document.body?document.body.offsetHeight:0);"
+               "var sw=Math.max(document.documentElement.scrollWidth,"
+                 "document.body?document.body.scrollWidth:0);"
+               "var el=document.querySelector('" + safe_sel + "');"
+               "if(!el){document.title='MEASURE_ERROR|Element not found: " + safe_sel + "';return;}"
+               "var r=el.getBoundingClientRect();"
+               "var sx=window.scrollX||window.pageXOffset||0;"
+               "var sy=window.scrollY||window.pageYOffset||0;"
+               "document.title='MEASURE|'+sw+'|'+sh+'|'"
+                 "+Math.round(r.left+sx)+'|'+Math.round(r.top+sy)+'|'"
+                 "+Math.round(r.width)+'|'+Math.round(r.height);"
+               "})();";
+        }
+        slot.browser->GetMainFrame()->ExecuteJavaScript(js, "about:blank", 0);
+        slot.measure.js_executed = true;
+      }
+
+      if (slot.measure.done) {
+        if (!slot.measure.error.empty()) {
+          Respond(slot.request.id, false, slot.measure.error);
+          slot.browser->GetMainFrame()->LoadURL("about:blank");
+          slot.state = SlotState::IDLE;
+          break;
+        }
+
+        // Determine target viewport height
+        int targetH = slot.measure.scroll_h;
+        if (slot.measure.has_element) {
+          // For element screenshots, we need at least elem_y + elem_h
+          targetH = std::max(targetH, slot.measure.elem_y + slot.measure.elem_h);
+        }
+        // Cap maximum height to prevent excessive memory usage
+        constexpr int MAX_CAPTURE_HEIGHT = 32768;
+        targetH = std::min(targetH, MAX_CAPTURE_HEIGHT);
+        targetH = std::max(targetH, 1);
+
+        if (targetH != slot.view_h) {
+          slot.view_h = targetH;
+          slot.browser->GetHost()->WasResized();
+          // Scroll to top so full page renders from origin
+          slot.browser->GetMainFrame()->ExecuteJavaScript(
+              "window.scrollTo(0,0);", "about:blank", 0);
+        }
+
+        slot.state    = SlotState::RESIZING;
+        slot.state_ts = std::chrono::steady_clock::now();
+      } else {
+        // Timeout after 10s
+        auto elapsed = std::chrono::steady_clock::now() - slot.state_ts;
+        if (std::chrono::duration_cast<std::chrono::seconds>(elapsed).count() >= 10) {
+          Respond(slot.request.id, false, "timeout measuring page dimensions");
+          slot.browser->GetMainFrame()->LoadURL("about:blank");
+          slot.state = SlotState::IDLE;
+        }
+      }
+      break;
+    }
+
+    case SlotState::RESIZING: {
+      auto elapsed = std::chrono::steady_clock::now() - slot.state_ts;
+      auto ms = std::chrono::duration_cast<std::chrono::milliseconds>(elapsed).count();
+
+      // Pump rendering while waiting for resize
+      if (slot.browser)
+        slot.browser->GetHost()->Invalidate(PET_VIEW);
+
+      // Wait 500ms for viewport resize to take effect
+      if (ms >= 500) {
+        slot.state    = SlotState::RENDERING;
+        slot.state_ts = std::chrono::steady_clock::now();
       }
       break;
     }
@@ -489,27 +705,88 @@ void TickSlot(BrowserSlot& slot) {
         if (slot.pixels.empty() || slot.pixel_w <= 0 || slot.pixel_h <= 0) {
           Respond(slot.request.id, false, "no pixel data captured");
         } else {
+          // Determine what pixels to save
+          std::vector<uint8_t>* save_pixels = &slot.pixels;
+          int save_w = slot.pixel_w;
+          int save_h = slot.pixel_h;
+          std::vector<uint8_t> cropped;
+
+          // If element selector was used, crop to element bounds
+          if (slot.measure.has_element) {
+            int cx = std::max(0, std::min(slot.measure.elem_x, slot.pixel_w));
+            int cy = std::max(0, std::min(slot.measure.elem_y, slot.pixel_h));
+            int cw = std::min(slot.measure.elem_w, slot.pixel_w - cx);
+            int ch = std::min(slot.measure.elem_h, slot.pixel_h - cy);
+            if (cw > 0 && ch > 0) {
+              CropPixelBuffer(slot.pixels, slot.pixel_w, slot.pixel_h,
+                              cx, cy, cw, ch, cropped);
+              save_pixels = &cropped;
+              save_w = cw;
+              save_h = ch;
+            }
+          }
+
+          // Check if slicing is requested
+          if (slot.request.slice_height > 0 && save_h > slot.request.slice_height) {
+            auto slices = ComputeSlices(save_h, slot.request.slice_height);
+            std::string all_paths;
+            bool all_ok = true;
+
+            for (size_t i = 0; i < slices.size(); i++) {
+              int sy = slices[i].y_start;
+              int sh = slices[i].y_end - slices[i].y_start;
+              std::vector<uint8_t> slice_buf;
+              CropPixelBuffer(*save_pixels, save_w, save_h,
+                              0, sy, save_w, sh, slice_buf);
+
 #ifdef _WIN32
-          std::string png_path = g_temp_dir + "\\ss_" +
-                                  std::to_string(slot.request.id) + ".png";
-          std::wstring wpng = Utf8ToWide(png_path);
-          bool ok = SaveBGRA_AsPNG(wpng, slot.pixels.data(), slot.pixel_w, slot.pixel_h);
+              std::string slice_path = g_temp_dir + "\\ss_" +
+                  std::to_string(slot.request.id) + "_" + std::to_string(i) + ".png";
+              std::wstring wslice = Utf8ToWide(slice_path);
+              bool ok = SaveBGRA_AsPNG(wslice, slice_buf.data(), save_w, sh);
 #else
-          std::string png_path = g_temp_dir + "/ss_" +
-                                  std::to_string(slot.request.id) + ".png";
-          bool ok = SaveBGRA_AsPNG(png_path, slot.pixels.data(), slot.pixel_w, slot.pixel_h);
+              std::string slice_path = g_temp_dir + "/ss_" +
+                  std::to_string(slot.request.id) + "_" + std::to_string(i) + ".png";
+              bool ok = SaveBGRA_AsPNG(slice_path, slice_buf.data(), save_w, sh);
 #endif
-          if (ok)
-            Respond(slot.request.id, true, png_path);
-          else
-            Respond(slot.request.id, false, "failed to encode PNG");
+              if (!ok) { all_ok = false; break; }
+              if (!all_paths.empty()) all_paths += "|";
+              all_paths += slice_path;
+            }
+
+            if (all_ok)
+              Respond(slot.request.id, true, all_paths);
+            else
+              Respond(slot.request.id, false, "failed to encode sliced PNGs");
+          } else {
+            // Single image output
+#ifdef _WIN32
+            std::string png_path = g_temp_dir + "\\ss_" +
+                                    std::to_string(slot.request.id) + ".png";
+            std::wstring wpng = Utf8ToWide(png_path);
+            bool ok = SaveBGRA_AsPNG(wpng, save_pixels->data(), save_w, save_h);
+#else
+            std::string png_path = g_temp_dir + "/ss_" +
+                                    std::to_string(slot.request.id) + ".png";
+            bool ok = SaveBGRA_AsPNG(png_path, save_pixels->data(), save_w, save_h);
+#endif
+            if (ok)
+              Respond(slot.request.id, true, png_path);
+            else
+              Respond(slot.request.id, false, "failed to encode PNG");
+          }
         }
-        // 释放像素缓冲区，避免内存驻留
+        // Release pixel buffer
         slot.pixels.clear();
         slot.pixels.shrink_to_fit();
 
-        if (slot.browser)
+        // Restore viewport and navigate away
+        slot.view_w = slot.request.width;
+        slot.view_h = slot.request.height;
+        if (slot.browser) {
+          slot.browser->GetHost()->WasResized();
           slot.browser->GetMainFrame()->LoadURL("about:blank");
+        }
         slot.state = SlotState::IDLE;
       }
       break;
@@ -753,6 +1030,7 @@ int main(int argc, char** argv) {
         idle->request      = std::move(req);
         idle->page_loaded  = false;
         idle->page_error   = false;
+        idle->measure      = MeasureResult{};
         idle->view_w       = idle->request.width;
         idle->view_h       = idle->request.height;
 

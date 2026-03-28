@@ -27,8 +27,12 @@ benchmark/results.json
 # === 交互式脚本输出 ===
 output/
 
+# === 废弃文件 ===
+cef-screenshot.cjs
+
 # === OS ===
 Thumbs.db
 .DS_Store
 /npm
 *.tgz
+/npm_test

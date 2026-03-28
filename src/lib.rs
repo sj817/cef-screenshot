@@ -96,6 +96,16 @@ pub struct ScreenshotOptions {
     pub height: Option<u32>,
     /// Extra delay in ms after page load before capture (default 500).
     pub delay: Option<u32>,
+    /// CSS selector to screenshot a specific element.
+    /// If set, captures the full page and crops to element bounds.
+    pub selector: Option<String>,
+    /// Capture the full scrollable page (default true).
+    /// Set to false for viewport-only capture.
+    pub full_page: Option<bool>,
+    /// Split the screenshot into slices of this height (in pixels).
+    /// Adjacent slices overlap by 100px for visual continuity.
+    /// When set, screenshot() returns Vec<Buffer>.
+    pub slice_height: Option<u32>,
 }
 
 // ---------------------------------------------------------------------------
@@ -173,26 +183,42 @@ async fn spawn_helper(
 }
 
 // ---------------------------------------------------------------------------
-// Internal: send a screenshot request to a specific helper
+// Internal: send a screenshot request and read file(s) from response
 // ---------------------------------------------------------------------------
-async fn do_screenshot(
+async fn do_screenshot_internal(
     inner: &HelperInner,
     url: &str,
     options: Option<&ScreenshotOptions>,
-) -> Result<Buffer> {
+) -> Result<Vec<Buffer>> {
     let id = inner.next_id.fetch_add(1, Ordering::Relaxed);
     let width = options.and_then(|o| o.width).unwrap_or(1920);
     let height = options.and_then(|o| o.height).unwrap_or(1080);
     let delay = options.and_then(|o| o.delay).unwrap_or(500);
 
+    // Full page: default true, but false if explicitly set
+    let has_selector = options.and_then(|o| o.selector.as_ref()).map_or(false, |s| !s.is_empty());
+    let full_page: u32 = if has_selector {
+        1 // selector implies full page
+    } else if options.and_then(|o| o.full_page).unwrap_or(true) {
+        1
+    } else {
+        0
+    };
+    let selector_str = options
+        .and_then(|o| o.selector.as_ref())
+        .filter(|s| !s.is_empty())
+        .map(|s| s.as_str())
+        .unwrap_or("-");
+    let slice_height = options.and_then(|o| o.slice_height).unwrap_or(0);
+
     // Register response channel
     let (tx, rx) = oneshot::channel();
     inner.pending.lock().await.insert(id, tx);
 
-    // Send request (serialized by stdin mutex)
+    // Send request: ID\tW\tH\tDELAY\tFULL_PAGE\tSELECTOR\tSLICE_H\tURL\n
     {
         let mut stdin = inner.stdin.lock().await;
-        let req = format!("{id}\t{width}\t{height}\t{delay}\t{url}\n");
+        let req = format!("{id}\t{width}\t{height}\t{delay}\t{full_page}\t{selector_str}\t{slice_height}\t{url}\n");
         if let Err(e) = stdin.write_all(req.as_bytes()).await {
             inner.pending.lock().await.remove(&id);
             return Err(Error::from_reason(format!("Write to helper failed: {e}")));
@@ -203,11 +229,10 @@ async fn do_screenshot(
         }
     }
 
-    // Wait for response (no locks held — true concurrency!)
-    let result = tokio::time::timeout(std::time::Duration::from_secs(60), rx)
+    // Wait for response
+    let result = tokio::time::timeout(std::time::Duration::from_secs(120), rx)
         .await
         .map_err(|_| {
-            // Clean up on timeout
             let pending = Arc::clone(&inner.pending);
             tokio::spawn(async move { pending.lock().await.remove(&id); });
             Error::from_reason("Timeout waiting for screenshot response")
@@ -215,12 +240,18 @@ async fn do_screenshot(
         .map_err(|_| Error::from_reason("Helper process closed unexpectedly"))?;
 
     match result {
-        Ok(png_path) => {
-            let data = tokio::fs::read(&png_path)
-                .await
-                .map_err(|e| Error::from_reason(format!("Failed to read PNG {png_path}: {e}")))?;
-            let _ = tokio::fs::remove_file(&png_path).await;
-            Ok(Buffer::from(data))
+        Ok(paths_str) => {
+            // paths_str may contain | separated paths for sliced screenshots
+            let paths: Vec<&str> = paths_str.split('|').collect();
+            let mut buffers = Vec::with_capacity(paths.len());
+            for path in &paths {
+                let data = tokio::fs::read(path)
+                    .await
+                    .map_err(|e| Error::from_reason(format!("Failed to read PNG {path}: {e}")))?;
+                let _ = tokio::fs::remove_file(path).await;
+                buffers.push(Buffer::from(data));
+            }
+            Ok(buffers)
         }
         Err(msg) => Err(Error::from_reason(format!("Screenshot failed: {msg}"))),
     }
@@ -295,8 +326,40 @@ pub async fn screenshot(url: String, options: Option<ScreenshotOptions>) -> Resu
         .map(Arc::clone)
         .ok_or_else(|| Error::from_reason("No helpers available"))?;
 
+    // Force slice_height to 0 for single-buffer return
+    let opts = options.map(|mut o| { o.slice_height = None; o });
+
     inner.active_count.fetch_add(1, Ordering::Relaxed);
-    let result = do_screenshot(&inner, &url, options.as_ref()).await;
+    let result = do_screenshot_internal(&inner, &url, opts.as_ref()).await;
+    inner.active_count.fetch_sub(1, Ordering::Relaxed);
+
+    result.and_then(|bufs| {
+        bufs.into_iter()
+            .next()
+            .ok_or_else(|| Error::from_reason("No screenshot data returned"))
+    })
+}
+
+#[napi]
+pub async fn screenshot_sliced(url: String, options: Option<ScreenshotOptions>) -> Result<Vec<Buffer>> {
+    let pool = {
+        let guard = POOL.lock().await;
+        Arc::clone(
+            guard
+                .as_ref()
+                .ok_or_else(|| Error::from_reason("Not initialized - call init() first"))?,
+        )
+    };
+
+    let inner = pool
+        .helpers
+        .iter()
+        .min_by_key(|h| h.active_count.load(Ordering::Relaxed))
+        .map(Arc::clone)
+        .ok_or_else(|| Error::from_reason("No helpers available"))?;
+
+    inner.active_count.fetch_add(1, Ordering::Relaxed);
+    let result = do_screenshot_internal(&inner, &url, options.as_ref()).await;
     inner.active_count.fetch_sub(1, Ordering::Relaxed);
 
     result
