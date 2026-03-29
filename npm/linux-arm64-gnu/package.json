@@ -1,19 +1,22 @@
 {
   "name": "cef-screenshot-linux-arm64-gnu",
   "version": "0.2.0",
-  "os": [
-    "linux"
-  ],
   "cpu": [
     "arm64"
   ],
   "main": "cef-screenshot.linux-arm64-gnu.node",
+  "files": [
+    "cef-screenshot.linux-arm64-gnu.node"
+  ],
   "description": "基于 CEF 离屏渲染的超低内存网页截图工具",
   "license": "MIT",
   "engines": {
     "node": ">=22.6.0",
     "pnpm": ">=9"
   },
+  "os": [
+    "linux"
+  ],
   "libc": [
     "glibc"
   ]

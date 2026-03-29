@@ -14,8 +14,7 @@
   },
   "files": [
     "index.js",
-    "index.d.ts",
-    "scripts/postinstall.mjs"
+    "index.d.ts"
   ],
   "scripts": {
     "setup": "node --experimental-strip-types scripts/setup.ts",
@@ -23,39 +22,32 @@
     "build": "napi build --platform --release --js false && tsc -p tsconfig.build.json",
     "build:debug": "napi build --platform --js false && tsc -p tsconfig.build.json",
     "pack:runtime": "node --experimental-strip-types scripts/pack.ts",
-    "postinstall": "node scripts/postinstall.mjs",
     "test": "node --experimental-strip-types test/test.ts",
     "test:concurrent": "node --experimental-strip-types test/test-concurrent.ts",
     "benchmark": "node --experimental-strip-types benchmark/compare.ts",
     "interactive": "node --experimental-strip-types scripts/interactive.ts",
     "typecheck": "tsc --noEmit",
     "artifacts": "napi artifacts",
-    "prepublishOnly": "napi prepublish -t npm --skip-gh-release",
+    "prepublishOnly": "napi prepublish -t npm --no-gh-release",
     "version": "napi version"
   },
   "napi": {
-    "name": "cef-screenshot",
-    "triples": {
-      "defaults": false,
-      "additional": [
-        "x86_64-pc-windows-msvc",
-        "aarch64-pc-windows-msvc",
-        "x86_64-unknown-linux-gnu",
-        "aarch64-unknown-linux-gnu",
-        "armv7-unknown-linux-gnueabihf",
-        "x86_64-apple-darwin",
-        "aarch64-apple-darwin"
-      ]
-    }
-  },
-  "cef-screenshot": {
-    "mirrorUrl": ""
+    "binaryName": "cef-screenshot",
+    "targets": [
+      "x86_64-pc-windows-msvc",
+      "aarch64-pc-windows-msvc",
+      "x86_64-unknown-linux-gnu",
+      "aarch64-unknown-linux-gnu",
+      "armv7-unknown-linux-gnueabihf",
+      "x86_64-apple-darwin",
+      "aarch64-apple-darwin"
+    ]
   },
   "devDependencies": {
-    "@napi-rs/cli": "^2.18.0",
-    "@types/node": "^22.0.0",
+    "@napi-rs/cli": "^3.6.0",
+    "@types/node": "^22.19.15",
     "puppeteer": "^24.40.0",
-    "typescript": "^5.8.0"
+    "typescript": "^6.0.2"
   },
   "packageManager": "pnpm@9.15.0",
   "engines": {

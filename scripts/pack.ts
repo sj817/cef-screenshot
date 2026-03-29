@@ -209,9 +209,6 @@ function main() {
   const ratio = ((1 - archiveSize / totalBytes) * 100).toFixed(1)
   console.log(`\n归档大小: ${(archiveSize / 1024 / 1024).toFixed(1)} MB（压缩率 ${ratio}%）`)
   console.log(`\n完成！请将此文件上传到 GitHub Release 或 CDN。`)
-  console.log(`用户通过以下方式配置下载地址：`)
-  console.log(`  方式一：设置环境变量  CEF_SCREENSHOT_CDN=https://your-cdn.com/path/`)
-  console.log(`  方式二：package.json  "cef-screenshot" > "mirrorUrl"`)
 }
 
 main()
