@@ -138,32 +138,108 @@ async fn spawn_helper(
     helper_dir: &std::path::Path,
     tabs: u32,
 ) -> Result<HelperInner> {
-    let mut child = Command::new(exe)
-        .arg(format!("--pool={tabs}"))
+    let mut cmd = Command::new(exe);
+    cmd.arg(format!("--pool={tabs}"))
         .current_dir(helper_dir)
         .stdin(std::process::Stdio::piped())
         .stdout(std::process::Stdio::piped())
-        .stderr(std::process::Stdio::inherit())
+        .stderr(std::process::Stdio::piped());
+
+    // On Linux, ensure the dynamic linker can find libcef.so in the helper
+    // directory. RPATH ($ORIGIN) should handle this, but LD_LIBRARY_PATH
+    // acts as a safety net for edge cases (e.g. stripped RPATH).
+    #[cfg(target_os = "linux")]
+    {
+        let mut ld_path = helper_dir.as_os_str().to_os_string();
+        if let Ok(existing) = std::env::var("LD_LIBRARY_PATH") {
+            if !existing.is_empty() {
+                ld_path.push(":");
+                ld_path.push(existing);
+            }
+        }
+        cmd.env("LD_LIBRARY_PATH", ld_path);
+    }
+
+    let mut child = cmd
         .spawn()
         .map_err(|e| Error::from_reason(format!("Failed to spawn helper: {e}")))?;
 
     let stdin = child.stdin.take().unwrap();
     let stdout = BufReader::new(child.stdout.take().unwrap());
 
-    // Read READY signal before spawning the reader
+    // Capture stderr in background for diagnostics
+    let stderr_buf: Arc<Mutex<String>> = Arc::new(Mutex::new(String::new()));
+    if let Some(stderr) = child.stderr.take() {
+        let buf = Arc::clone(&stderr_buf);
+        tokio::spawn(async move {
+            let mut reader = BufReader::new(stderr);
+            let mut line = String::new();
+            while let Ok(n) = reader.read_line(&mut line).await {
+                if n == 0 {
+                    break;
+                }
+                let mut b = buf.lock().await;
+                b.push_str(&line);
+                // Keep only the last 4 KB to avoid unbounded growth
+                if b.len() > 4096 {
+                    let start = b.len() - 4096;
+                    *b = b[start..].to_string();
+                }
+                line.clear();
+            }
+        });
+    }
+
+    // Read READY signal before spawning the response reader
     let mut ready_stdout = stdout;
     let mut line = String::new();
-    let ready = tokio::time::timeout(
+    let ready_result = tokio::time::timeout(
         std::time::Duration::from_secs(30),
         ready_stdout.read_line(&mut line),
     )
-    .await
-    .map_err(|_| Error::from_reason("Timeout waiting for helper READY signal"))?
-    .map_err(|e| Error::from_reason(format!("IO error reading READY: {e}")))?;
+    .await;
+
+    // Handle timeout
+    let ready = match ready_result {
+        Err(_) => {
+            let _ = child.kill().await;
+            let stderr_snapshot = stderr_buf.lock().await;
+            let stderr_info = if stderr_snapshot.is_empty() {
+                String::new()
+            } else {
+                format!("\nstderr: {}", stderr_snapshot.trim())
+            };
+            return Err(Error::from_reason(format!(
+                "Timeout waiting for helper READY signal (30s){stderr_info}"
+            )));
+        }
+        Ok(r) => r.map_err(|e| Error::from_reason(format!("IO error reading READY: {e}")))?,
+    };
 
     if ready == 0 || !line.trim().starts_with("READY") {
+        // Give stderr reader a moment to capture output from the exiting process
+        tokio::time::sleep(std::time::Duration::from_millis(200)).await;
+
+        let stdout_info = if line.is_empty() {
+            "stdout=(EOF)".to_string()
+        } else {
+            format!("stdout='{}'", line.trim())
+        };
+        let exit_info = match child.try_wait() {
+            Ok(Some(status)) => format!(", exit={status}"),
+            _ => String::new(),
+        };
+        let stderr_snapshot = stderr_buf.lock().await;
+        let stderr_info = if stderr_snapshot.is_empty() {
+            String::new()
+        } else {
+            format!(", stderr: {}", stderr_snapshot.trim())
+        };
+
         let _ = child.kill().await;
-        return Err(Error::from_reason("Helper did not send READY signal"));
+        return Err(Error::from_reason(format!(
+            "Helper did not send READY signal. {stdout_info}{exit_info}{stderr_info}"
+        )));
     }
 
     // Start background response reader

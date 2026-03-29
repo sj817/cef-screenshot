@@ -314,6 +314,12 @@ class ScreenshotApp : public CefApp, public CefBrowserProcessHandler {
     cmd->AppendSwitch("disable-software-rasterizer");
     cmd->AppendSwitch("disable-webgl");
 
+#if !defined(_WIN32) && !defined(__APPLE__)
+    // Use headless Ozone platform on Linux — removes dependency on X11/Wayland
+    // display server for offscreen rendering.
+    cmd->AppendSwitchWithValue("ozone-platform", "headless");
+#endif
+
     // ---- Networking / sync ----
     cmd->AppendSwitch("no-proxy-server");
     cmd->AppendSwitch("disable-background-networking");
