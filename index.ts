@@ -3,7 +3,7 @@
 
 import { createRequire } from 'node:module'
 import { dirname, join } from 'node:path'
-import { existsSync } from 'node:fs'
+import { existsSync, writeFileSync } from 'node:fs'
 import { fileURLToPath } from 'node:url'
 
 /** 初始化选项 */
@@ -29,6 +29,36 @@ export interface InitOptions {
   tabs?: number
 }
 
+/** 裁剪区域 */
+export interface ClipRegion {
+  /** 裁剪区域左上角 X 坐标（像素） */
+  x: number
+  /** 裁剪区域左上角 Y 坐标（像素） */
+  y: number
+  /** 裁剪区域宽度（像素） */
+  width: number
+  /** 裁剪区域高度（像素） */
+  height: number
+}
+
+/** 页面导航参数 */
+export interface PageGotoParams {
+  /**
+   * 导航超时时间（毫秒）
+   * @defaultValue 30000
+   */
+  timeout?: number
+  /**
+   * 页面加载完成的判定标准
+   * - `'load'`: 页面及资源加载完成（默认）
+   * - `'domcontentloaded'`: DOM 解析完成（暂未支持，回退到 load）
+   * - `'networkidle0'`: 无网络请求（暂未支持，回退到 load）
+   * - `'networkidle2'`: 网络请求 ≤ 2（暂未支持，回退到 load）
+   * @defaultValue 'load'
+   */
+  waitUntil?: 'load' | 'domcontentloaded' | 'networkidle0' | 'networkidle2'
+}
+
 /** 截图选项 */
 export interface ScreenshotOptions {
   /** 视窗宽度（像素），默认 1920 */
@@ -44,6 +74,37 @@ export interface ScreenshotOptions {
    * 设为 false 则仅截取视窗可见区域（旧版行为）
    */
   fullPage?: boolean
+  /**
+   * 隐藏默认白色背景，使截图支持透明背景
+   * @defaultValue false
+   */
+  omitBackground?: boolean
+  /**
+   * 裁剪区域（像素坐标），截取页面的指定矩形区域
+   * 与 selector 互斥，设置 clip 时 selector 将被忽略
+   */
+  clip?: ClipRegion
+  /**
+   * 图片编码方式
+   * @defaultValue 'binary'
+   */
+  encoding?: 'binary' | 'base64'
+  /**
+   * 保存截图的文件路径。如果提供，截图将同时保存到该路径
+   */
+  path?: string
+  /**
+   * 截图失败时的重试次数
+   * @defaultValue 1
+   */
+  retry?: number
+  /**
+   * 自定义 HTTP 请求头
+   * @description 暂未支持，预留接口
+   */
+  headers?: Record<string, string>
+  /** 页面导航参数 */
+  pageGotoParams?: PageGotoParams
 }
 
 /** 分片截图选项 */
@@ -56,10 +117,23 @@ export interface SlicedScreenshotOptions extends ScreenshotOptions {
   sliceHeight: number
 }
 
+/** 传递给原生绑定的选项（不含 TS 层处理的字段） */
+interface NativeScreenshotOptions {
+  width?: number
+  height?: number
+  delay?: number
+  selector?: string
+  fullPage?: boolean
+  sliceHeight?: number
+  omitBackground?: boolean
+  clip?: ClipRegion
+  timeout?: number
+}
+
 interface NativeBinding {
   init(options?: InitOptions): Promise<void>
-  screenshot(url: string, options?: ScreenshotOptions): Promise<Buffer>
-  screenshotSliced(url: string, options?: ScreenshotOptions): Promise<Buffer[]>
+  screenshot(url: string, options?: NativeScreenshotOptions): Promise<Buffer>
+  screenshotSliced(url: string, options?: NativeScreenshotOptions): Promise<Buffer[]>
   shutdown(): Promise<void>
 }
 
@@ -129,6 +203,41 @@ function resolveHelperDir(): string | undefined {
 }
 
 /**
+ * 从用户选项中提取原生绑定所需的选项
+ */
+function toNativeOptions(options?: ScreenshotOptions): NativeScreenshotOptions | undefined {
+  if (!options) return undefined
+  const {
+    encoding: _encoding,
+    path: _path,
+    retry: _retry,
+    headers: _headers,
+    pageGotoParams,
+    ...nativeOpts
+  } = options
+  const result: NativeScreenshotOptions = { ...nativeOpts }
+  if (pageGotoParams?.timeout) {
+    result.timeout = pageGotoParams.timeout
+  }
+  return result
+}
+
+/**
+ * 带重试的异步执行
+ */
+async function withRetry<T>(maxRetries: number, fn: () => Promise<T>): Promise<T> {
+  let lastError: Error | undefined
+  for (let attempt = 0; attempt < maxRetries; attempt++) {
+    try {
+      return await fn()
+    } catch (err) {
+      lastError = err as Error
+    }
+  }
+  throw lastError
+}
+
+/**
  * 启动 CEF 辅助进程，初始化浏览器池
  * 必须在调用 screenshot() 之前调用
  */
@@ -148,17 +257,46 @@ export function init(options?: InitOptions): Promise<void> {
  */
 export function screenshot(url: string, options: SlicedScreenshotOptions): Promise<Buffer[]>
 /**
+ * 对指定 URL 进行截图（base64 编码）
+ * @param url 要截图的页面 URL
+ * @param options 截图参数，encoding 设为 'base64'
+ * @returns base64 编码的 PNG 字符串
+ */
+export function screenshot(url: string, options: ScreenshotOptions & { encoding: 'base64' }): Promise<string>
+/**
  * 对指定 URL 进行截图
- * @param url 要截图的页面 URL（必须以 http:// 或 https:// 开头）
+ * @param url 要截图的页面 URL（支持 http://, https://, file:// 协议）
  * @param options 截图参数（宽度、高度、等待时间、选择器等）
  * @returns PNG 格式的 Buffer
  */
 export function screenshot(url: string, options?: ScreenshotOptions): Promise<Buffer>
-export function screenshot(url: string, options?: ScreenshotOptions | SlicedScreenshotOptions): Promise<Buffer | Buffer[]> {
-  if (options && 'sliceHeight' in options && options.sliceHeight && options.sliceHeight > 0) {
-    return getNative().screenshotSliced(url, options)
-  }
-  return getNative().screenshot(url, options)
+export function screenshot(url: string, options?: ScreenshotOptions | SlicedScreenshotOptions): Promise<Buffer | Buffer[] | string> {
+  const retries = options?.retry ?? 1
+  const encoding = options?.encoding
+  const savePath = options?.path
+
+  return withRetry(Math.max(1, retries), async () => {
+    if (options && 'sliceHeight' in options && options.sliceHeight && options.sliceHeight > 0) {
+      const nativeOpts = toNativeOptions(options)
+      const bufs = await getNative().screenshotSliced(url, nativeOpts)
+      if (savePath && bufs.length > 0) {
+        // 分片模式保存第一片到指定路径
+        writeFileSync(savePath, bufs[0])
+      }
+      return bufs
+    }
+
+    const nativeOpts = toNativeOptions(options)
+    const buf = await getNative().screenshot(url, nativeOpts)
+
+    if (savePath) {
+      writeFileSync(savePath, buf)
+    }
+    if (encoding === 'base64') {
+      return buf.toString('base64')
+    }
+    return buf
+  })
 }
 
 /**

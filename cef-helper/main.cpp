@@ -6,7 +6,7 @@
 // Usage:  cef_screenshot_helper[.exe] [--pool=N]    (default N=3)
 //
 // IPC (stdin/stdout, tab-delimited lines):
-//   Request:  ID\tWIDTH\tHEIGHT\tDELAY_MS\tURL\n
+//   Request:  ID\tW\tH\tDELAY\tFULL_PAGE\tSELECTOR\tSLICE_H\tOMIT_BG\tTIMEOUT\tCLIP\tURL\n
 //   Response: ID\tok\tFILE_PATH\n   or   ID\terror\tMESSAGE\n
 //
 // On startup, prints "READY\n" to stdout when all browsers are initialized.
@@ -214,6 +214,13 @@ struct ScreenshotRequest {
   bool full_page = false;
   std::string selector;
   int slice_height = 0;
+  bool omit_background = false;
+  int timeout_sec = 30;
+  bool has_clip = false;
+  int clip_x = 0;
+  int clip_y = 0;
+  int clip_w = 0;
+  int clip_h = 0;
   std::string url;
 };
 
@@ -254,6 +261,10 @@ struct BrowserSlot {
   int                     view_h = 1080;
 
   MeasureResult           measure;
+
+  // Paint coverage tracking (for long page rendering)
+  int                     max_paint_y = 0;
+  bool                    bg_injected = false;
 };
 
 // ========================================================
@@ -311,7 +322,6 @@ class ScreenshotApp : public CefApp, public CefBrowserProcessHandler {
     // ---- GPU / rendering ----
     cmd->AppendSwitch("disable-gpu");
     cmd->AppendSwitch("disable-gpu-shader-disk-cache");
-    cmd->AppendSwitch("disable-software-rasterizer");
     cmd->AppendSwitch("disable-webgl");
 
 #if !defined(_WIN32) && !defined(__APPLE__)
@@ -428,7 +438,7 @@ class ScreenshotClient : public CefClient,
 
   void OnPaint(CefRefPtr<CefBrowser> browser,
                PaintElementType type,
-               const RectList& /*dirtyRects*/,
+               const RectList& dirtyRects,
                const void* buffer,
                int width, int height) override {
     if (type != PET_VIEW) return;
@@ -439,6 +449,12 @@ class ScreenshotClient : public CefClient,
     std::memcpy(slot->pixels.data(), buffer, sz);
     slot->pixel_w = width;
     slot->pixel_h = height;
+    // Track paint coverage for long page rendering
+    for (const auto& rect : dirtyRects) {
+      int bottom = rect.y + rect.height;
+      if (bottom > slot->max_paint_y)
+        slot->max_paint_y = bottom;
+    }
   }
 
   // --- CefLoadHandler ---
@@ -527,7 +543,7 @@ void StdinReaderThread() {
     if (line.empty()) continue;
     if (!line.empty() && line.back() == '\r') line.pop_back();
 
-    // Parse: ID\tWIDTH\tHEIGHT\tDELAY_MS\tFULL_PAGE\tSELECTOR\tSLICE_HEIGHT\tURL
+    // Parse: ID\tW\tH\tDELAY\tFULL_PAGE\tSELECTOR\tSLICE_H\tOMIT_BG\tTIMEOUT\tCLIP\tURL
     size_t p1 = line.find('\t');
     size_t p2 = (p1 != std::string::npos) ? line.find('\t', p1 + 1) : std::string::npos;
     size_t p3 = (p2 != std::string::npos) ? line.find('\t', p2 + 1) : std::string::npos;
@@ -535,19 +551,39 @@ void StdinReaderThread() {
     size_t p5 = (p4 != std::string::npos) ? line.find('\t', p4 + 1) : std::string::npos;
     size_t p6 = (p5 != std::string::npos) ? line.find('\t', p5 + 1) : std::string::npos;
     size_t p7 = (p6 != std::string::npos) ? line.find('\t', p6 + 1) : std::string::npos;
+    size_t p8 = (p7 != std::string::npos) ? line.find('\t', p7 + 1) : std::string::npos;
+    size_t p9 = (p8 != std::string::npos) ? line.find('\t', p8 + 1) : std::string::npos;
+    size_t p10 = (p9 != std::string::npos) ? line.find('\t', p9 + 1) : std::string::npos;
 
-    if (p7 == std::string::npos) continue;
+    if (p10 == std::string::npos) continue;
 
     ScreenshotRequest req;
     try {
-      req.id         = std::stoi(line.substr(0, p1));
-      req.width      = std::stoi(line.substr(p1 + 1, p2 - p1 - 1));
-      req.height     = std::stoi(line.substr(p2 + 1, p3 - p2 - 1));
-      req.delay_ms   = std::stoi(line.substr(p3 + 1, p4 - p3 - 1));
-      req.full_page  = line.substr(p4 + 1, p5 - p4 - 1) == "1";
-      req.selector   = line.substr(p5 + 1, p6 - p5 - 1);
+      req.id           = std::stoi(line.substr(0, p1));
+      req.width        = std::stoi(line.substr(p1 + 1, p2 - p1 - 1));
+      req.height       = std::stoi(line.substr(p2 + 1, p3 - p2 - 1));
+      req.delay_ms     = std::stoi(line.substr(p3 + 1, p4 - p3 - 1));
+      req.full_page    = line.substr(p4 + 1, p5 - p4 - 1) == "1";
+      req.selector     = line.substr(p5 + 1, p6 - p5 - 1);
       req.slice_height = std::stoi(line.substr(p6 + 1, p7 - p6 - 1));
-      req.url        = line.substr(p7 + 1);
+      req.omit_background = line.substr(p7 + 1, p8 - p7 - 1) == "1";
+      int timeout_val  = std::stoi(line.substr(p8 + 1, p9 - p8 - 1));
+      req.timeout_sec  = (timeout_val > 0) ? timeout_val : 30;
+
+      // Parse clip: "-" or "X,Y,W,H"
+      std::string clip_str = line.substr(p9 + 1, p10 - p9 - 1);
+      if (clip_str != "-" && !clip_str.empty()) {
+        auto clip_parts = SplitString(clip_str, ',');
+        if (clip_parts.size() >= 4) {
+          req.clip_x = std::stoi(clip_parts[0]);
+          req.clip_y = std::stoi(clip_parts[1]);
+          req.clip_w = std::stoi(clip_parts[2]);
+          req.clip_h = std::stoi(clip_parts[3]);
+          req.has_clip = true;
+        }
+      }
+
+      req.url = line.substr(p10 + 1);
     } catch (...) { continue; }
 
     if (req.selector == "-") req.selector.clear();
@@ -587,7 +623,7 @@ void TickSlot(BrowserSlot& slot) {
           slot.state    = SlotState::RENDERING;
           slot.state_ts = std::chrono::steady_clock::now();
         }
-      } else if (sec >= 30) {
+      } else if (sec >= slot.request.timeout_sec) {
         Respond(slot.request.id, false, "timeout waiting for page load");
         if (slot.browser)
           slot.browser->GetMainFrame()->LoadURL("about:blank");
@@ -693,12 +729,16 @@ void TickSlot(BrowserSlot& slot) {
       auto elapsed = std::chrono::steady_clock::now() - slot.state_ts;
       auto ms = std::chrono::duration_cast<std::chrono::milliseconds>(elapsed).count();
 
-      // Pump rendering while waiting for resize
-      if (slot.browser)
-        slot.browser->GetHost()->Invalidate(PET_VIEW);
+      // Aggressively pump rendering to fill viewport after resize
+      for (int i = 0; i < 5; i++) {
+        if (slot.browser)
+          slot.browser->GetHost()->Invalidate(PET_VIEW);
+        CefDoMessageLoopWork();
+      }
 
-      // Wait 500ms for viewport resize to take effect
-      if (ms >= 500) {
+      // Wait until pixel buffer matches target size, or timeout
+      bool size_ok = (slot.pixel_w == slot.view_w && slot.pixel_h == slot.view_h);
+      if ((size_ok && ms >= 300) || ms >= 2000) {
         slot.state    = SlotState::RENDERING;
         slot.state_ts = std::chrono::steady_clock::now();
       }
@@ -709,10 +749,27 @@ void TickSlot(BrowserSlot& slot) {
       auto elapsed = std::chrono::steady_clock::now() - slot.state_ts;
       auto ms = std::chrono::duration_cast<std::chrono::milliseconds>(elapsed).count();
 
+      // Inject transparent background CSS if requested (once)
+      if (!slot.bg_injected && slot.request.omit_background && slot.browser) {
+        slot.browser->GetMainFrame()->ExecuteJavaScript(
+            "document.documentElement.style.setProperty('background','transparent','important');"
+            "if(document.body)document.body.style.setProperty('background','transparent','important');",
+            "about:blank", 0);
+        slot.bg_injected = true;
+      }
+
+      // Pump rendering while waiting for delay
+      if (slot.browser)
+        slot.browser->GetHost()->Invalidate(PET_VIEW);
+
       if (ms >= slot.request.delay_ms) {
-        if (slot.browser)
-          slot.browser->GetHost()->Invalidate(PET_VIEW);
-        CefDoMessageLoopWork();
+        // Aggressively pump rendering to ensure all tiles are painted
+        // (critical for long pages on Linux)
+        for (int i = 0; i < 30; i++) {
+          if (slot.browser)
+            slot.browser->GetHost()->Invalidate(PET_VIEW);
+          CefDoMessageLoopWork();
+        }
 
         if (slot.pixels.empty() || slot.pixel_w <= 0 || slot.pixel_h <= 0) {
           Respond(slot.request.id, false, "no pixel data captured");
@@ -723,8 +780,21 @@ void TickSlot(BrowserSlot& slot) {
           int save_h = slot.pixel_h;
           std::vector<uint8_t> cropped;
 
-          // If element selector was used, crop to element bounds
-          if (slot.measure.has_element) {
+          // Crop to clip region or element bounds
+          if (slot.request.has_clip) {
+            // Explicit clip region takes priority
+            int cx = std::max(0, std::min(slot.request.clip_x, slot.pixel_w));
+            int cy = std::max(0, std::min(slot.request.clip_y, slot.pixel_h));
+            int cw = std::min(slot.request.clip_w, slot.pixel_w - cx);
+            int ch = std::min(slot.request.clip_h, slot.pixel_h - cy);
+            if (cw > 0 && ch > 0) {
+              CropPixelBuffer(slot.pixels, slot.pixel_w, slot.pixel_h,
+                              cx, cy, cw, ch, cropped);
+              save_pixels = &cropped;
+              save_w = cw;
+              save_h = ch;
+            }
+          } else if (slot.measure.has_element) {
             int cx = std::max(0, std::min(slot.measure.elem_x, slot.pixel_w));
             int cy = std::max(0, std::min(slot.measure.elem_y, slot.pixel_h));
             int cw = std::min(slot.measure.elem_w, slot.pixel_w - cx);
@@ -985,7 +1055,9 @@ int main(int argc, char** argv) {
 
   CefBrowserSettings browser_settings;
   browser_settings.windowless_frame_rate = 30;
-  browser_settings.background_color = CefColorSetARGB(255, 255, 255, 255);
+  // Use transparent background so omitBackground option works correctly.
+  // Pages with default CSS (background: canvas) still render white.
+  browser_settings.background_color = CefColorSetARGB(0, 0, 0, 0);
 
   g_slots.resize(g_pool_size);
   for (int i = 0; i < g_pool_size; i++) {
@@ -1048,6 +1120,8 @@ int main(int argc, char** argv) {
         idle->page_loaded  = false;
         idle->page_error   = false;
         idle->measure      = MeasureResult{};
+        idle->max_paint_y  = 0;
+        idle->bg_injected  = false;
         idle->view_w       = idle->request.width;
         idle->view_h       = idle->request.height;
 

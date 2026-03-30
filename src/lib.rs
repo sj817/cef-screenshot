@@ -89,6 +89,14 @@ pub struct InitOptions {
 }
 
 #[napi(object)]
+pub struct ClipRegion {
+    pub x: f64,
+    pub y: f64,
+    pub width: f64,
+    pub height: f64,
+}
+
+#[napi(object)]
 pub struct ScreenshotOptions {
     /// Viewport width in pixels (default 1920).
     pub width: Option<u32>,
@@ -106,6 +114,12 @@ pub struct ScreenshotOptions {
     /// Adjacent slices overlap by 100px for visual continuity.
     /// When set, screenshot() returns Vec<Buffer>.
     pub slice_height: Option<u32>,
+    /// Hide default white background for transparent screenshots.
+    pub omit_background: Option<bool>,
+    /// Crop region in pixels {x, y, width, height}.
+    pub clip: Option<ClipRegion>,
+    /// Page load timeout in milliseconds (default 30000).
+    pub timeout: Option<u32>,
 }
 
 // ---------------------------------------------------------------------------
@@ -287,14 +301,25 @@ async fn do_screenshot_internal(
         .unwrap_or("-");
     let slice_height = options.and_then(|o| o.slice_height).unwrap_or(0);
 
+    // New IPC fields
+    let omit_bg: u32 = if options.and_then(|o| o.omit_background).unwrap_or(false) { 1 } else { 0 };
+    let timeout_sec = options
+        .and_then(|o| o.timeout)
+        .map(|t| t / 1000)
+        .unwrap_or(0); // 0 = use C++ default (30s)
+    let clip_str = options
+        .and_then(|o| o.clip.as_ref())
+        .map(|c| format!("{},{},{},{}", c.x as i32, c.y as i32, c.width as i32, c.height as i32))
+        .unwrap_or_else(|| "-".to_string());
+
     // Register response channel
     let (tx, rx) = oneshot::channel();
     inner.pending.lock().await.insert(id, tx);
 
-    // Send request: ID\tW\tH\tDELAY\tFULL_PAGE\tSELECTOR\tSLICE_H\tURL\n
+    // Send request: ID\tW\tH\tDELAY\tFULL_PAGE\tSELECTOR\tSLICE_H\tOMIT_BG\tTIMEOUT\tCLIP\tURL\n
     {
         let mut stdin = inner.stdin.lock().await;
-        let req = format!("{id}\t{width}\t{height}\t{delay}\t{full_page}\t{selector_str}\t{slice_height}\t{url}\n");
+        let req = format!("{id}\t{width}\t{height}\t{delay}\t{full_page}\t{selector_str}\t{slice_height}\t{omit_bg}\t{timeout_sec}\t{clip_str}\t{url}\n");
         if let Err(e) = stdin.write_all(req.as_bytes()).await {
             inner.pending.lock().await.remove(&id);
             return Err(Error::from_reason(format!("Write to helper failed: {e}")));
@@ -305,8 +330,12 @@ async fn do_screenshot_internal(
         }
     }
 
-    // Wait for response
-    let result = tokio::time::timeout(std::time::Duration::from_secs(120), rx)
+    // Wait for response — adjust timeout based on user-configured page load timeout
+    let overall_timeout_secs = options
+        .and_then(|o| o.timeout)
+        .map(|t| (t as u64 / 1000).max(30) + 90)
+        .unwrap_or(120);
+    let result = tokio::time::timeout(std::time::Duration::from_secs(overall_timeout_secs), rx)
         .await
         .map_err(|_| {
             let pending = Arc::clone(&inner.pending);

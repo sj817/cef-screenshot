@@ -25,6 +25,7 @@
     "test": "node --experimental-strip-types test/test.ts",
     "test:concurrent": "node --experimental-strip-types test/test-concurrent.ts",
     "test:selector": "node --experimental-strip-types test/test-selector.ts",
+    "test:options": "node --experimental-strip-types test/test-options.ts",
     "benchmark": "node --experimental-strip-types benchmark/compare.ts",
     "interactive": "node --experimental-strip-types scripts/interactive.ts",
     "typecheck": "tsc --noEmit",
