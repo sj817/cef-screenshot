@@ -628,7 +628,13 @@ void TickSlot(BrowserSlot& slot) {
                  "document.body?document.body.offsetHeight:0);"
                "var sw=Math.max(document.documentElement.scrollWidth,"
                  "document.body?document.body.scrollWidth:0);"
-               "var el=document.querySelector('" + safe_sel + "');"
+               "var sel='" + safe_sel + "';"
+               "var el=null;"
+               "try{el=document.querySelector(sel);}catch(e){}"
+               "if(!el&&/^[a-zA-Z_][a-zA-Z0-9_-]*$/.test(sel)){"
+                 "el=document.getElementById(sel);"
+                 "if(!el)try{el=document.querySelector('.'+sel);}catch(e){}"
+               "}"
                "if(!el){document.title='MEASURE_ERROR|Element not found: " + safe_sel + "';return;}"
                "var r=el.getBoundingClientRect();"
                "var sx=window.scrollX||window.pageXOffset||0;"
@@ -992,11 +998,16 @@ int main(int argc, char** argv) {
         wi, client.get(), "about:blank", browser_settings, nullptr, nullptr);
   }
 
-  // Wait until all browsers are ready
+  // Wait until all browsers are ready and initial about:blank is loaded.
+  // We must drain about:blank's OnLoadEnd here to prevent it from firing
+  // during the first real request, which would prematurely set page_loaded.
   for (int wait = 0; wait < 200; wait++) {
     bool all_ready = true;
     for (auto& slot : g_slots) {
-      if (slot.state == SlotState::CREATING) { all_ready = false; break; }
+      if (slot.state == SlotState::CREATING || !slot.page_loaded) {
+        all_ready = false;
+        break;
+      }
     }
     if (all_ready) break;
     CefDoMessageLoopWork();
