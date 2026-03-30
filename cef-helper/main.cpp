@@ -265,6 +265,10 @@ struct BrowserSlot {
   // Paint coverage tracking (for long page rendering)
   int                     max_paint_y = 0;
   bool                    bg_injected = false;
+
+  // Paint timing for render-completion detection
+  std::chrono::steady_clock::time_point last_paint_time;
+  int                     render_paint_count = 0;
 };
 
 // ========================================================
@@ -455,6 +459,8 @@ class ScreenshotClient : public CefClient,
       if (bottom > slot->max_paint_y)
         slot->max_paint_y = bottom;
     }
+    slot->last_paint_time = std::chrono::steady_clock::now();
+    slot->render_paint_count++;
   }
 
   // --- CefLoadHandler ---
@@ -620,6 +626,9 @@ void TickSlot(BrowserSlot& slot) {
           slot.state    = SlotState::MEASURING;
           slot.state_ts = std::chrono::steady_clock::now();
         } else {
+          slot.max_paint_y = 0;
+          slot.render_paint_count = 0;
+          slot.last_paint_time = std::chrono::steady_clock::now();
           slot.state    = SlotState::RENDERING;
           slot.state_ts = std::chrono::steady_clock::now();
         }
@@ -739,6 +748,9 @@ void TickSlot(BrowserSlot& slot) {
       // Wait until pixel buffer matches target size, or timeout
       bool size_ok = (slot.pixel_w == slot.view_w && slot.pixel_h == slot.view_h);
       if ((size_ok && ms >= 300) || ms >= 2000) {
+        slot.max_paint_y = 0;
+        slot.render_paint_count = 0;
+        slot.last_paint_time = std::chrono::steady_clock::now();
         slot.state    = SlotState::RENDERING;
         slot.state_ts = std::chrono::steady_clock::now();
       }
@@ -758,20 +770,63 @@ void TickSlot(BrowserSlot& slot) {
         slot.bg_injected = true;
       }
 
-      // Pump rendering while waiting for delay
+      // Pump rendering continuously
       if (slot.browser)
         slot.browser->GetHost()->Invalidate(PET_VIEW);
 
-      if (ms >= slot.request.delay_ms) {
-        // Aggressively pump rendering to ensure all tiles are painted
-        // (critical for long pages on Linux)
-        for (int i = 0; i < 30; i++) {
-          if (slot.browser)
-            slot.browser->GetHost()->Invalidate(PET_VIEW);
-          CefDoMessageLoopWork();
+      if (ms < slot.request.delay_ms)
+        break;  // Still in initial delay period
+
+      // ── Paint-stability check ──────────────────────────────────────
+      // Instead of capturing immediately after delay_ms, wait until
+      // OnPaint stops firing (rendering has stabilized). This prevents
+      // white or partially-rendered screenshots on slow machines/Linux.
+      {
+        auto since_paint = std::chrono::steady_clock::now() - slot.last_paint_time;
+        auto paint_idle_ms = std::chrono::duration_cast<std::chrono::milliseconds>(since_paint).count();
+
+        bool should_capture = false;
+
+        // Hard timeout: delay_ms + 5 s — always capture to avoid hanging
+        if (ms >= slot.request.delay_ms + 5000) {
+          should_capture = true;
+        }
+        // Paint has stabilized (no new OnPaint for 200 ms) and we got frames
+        else if (slot.render_paint_count > 0 && paint_idle_ms >= 200) {
+          // For tall full-page captures, also verify paint coverage
+          bool is_tall = (slot.view_h > slot.request.height + 100);
+          if (is_tall) {
+            bool good_coverage = (slot.max_paint_y >= (int)(slot.view_h * 0.85));
+            should_capture = good_coverage || paint_idle_ms >= 1000;
+          } else {
+            should_capture = true;
+          }
+        }
+        // No paint at all for 2 s past delay — page may genuinely be blank
+        else if (slot.render_paint_count == 0 && ms >= slot.request.delay_ms + 2000) {
+          should_capture = true;
         }
 
-        if (slot.pixels.empty() || slot.pixel_w <= 0 || slot.pixel_h <= 0) {
+        if (!should_capture) {
+          // Keep pumping aggressively while waiting for paint to settle
+          for (int i = 0; i < 5; i++) {
+            if (slot.browser)
+              slot.browser->GetHost()->Invalidate(PET_VIEW);
+            CefDoMessageLoopWork();
+          }
+          break;
+        }
+      }
+
+      // ── Capture ────────────────────────────────────────────────────
+      // Final aggressive pump before reading pixel buffer
+      for (int i = 0; i < 30; i++) {
+        if (slot.browser)
+          slot.browser->GetHost()->Invalidate(PET_VIEW);
+        CefDoMessageLoopWork();
+      }
+
+      if (slot.pixels.empty() || slot.pixel_w <= 0 || slot.pixel_h <= 0) {
           Respond(slot.request.id, false, "no pixel data captured");
         } else {
           // Determine what pixels to save
@@ -870,7 +925,6 @@ void TickSlot(BrowserSlot& slot) {
           slot.browser->GetMainFrame()->LoadURL("about:blank");
         }
         slot.state = SlotState::IDLE;
-      }
       break;
     }
   }
