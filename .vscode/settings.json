@@ -7,6 +7,8 @@
     "-G", "Visual Studio 17 2022",
     "-A", "x64"
   ],
+  // C++ IntelliSense：使用 CMake 生成的 compile_commands 配置
+  "C_Cpp.default.configurationProvider": "ms-vscode.cmake-tools",
   // 将 cmake 默认安装路径注入终端 PATH
   // 若 cmake 已在系统 PATH 中此项可忽略
   "terminal.integrated.env.windows": {
