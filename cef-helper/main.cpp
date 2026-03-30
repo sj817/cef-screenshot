@@ -201,22 +201,6 @@ void CropPixelBuffer(const std::vector<uint8_t>& src, int srcW, int /*srcH*/,
   }
 }
 
-// ── Trim trailing fully-transparent rows ────────────────────────────────
-// For full-page captures, scrollHeight can overestimate (body margin etc.),
-// leaving transparent rows at the bottom.  Scan upward to find the last row
-// with any pixel whose alpha > 0, and return the trimmed height.
-int TrimTransparentBottom(const std::vector<uint8_t>& pixels, int w, int h) {
-  for (int y = h - 1; y >= 0; --y) {
-    const uint8_t* row = pixels.data() + (size_t)y * w * 4;
-    for (int x = 0; x < w; ++x) {
-      // BGRA layout — alpha is at offset 3
-      if (row[x * 4 + 3] != 0)
-        return y + 1;
-    }
-  }
-  return h;  // entirely transparent — return original
-}
-
 } // namespace
 
 // ========================================================
@@ -777,8 +761,20 @@ void TickSlot(BrowserSlot& slot) {
       auto elapsed = std::chrono::steady_clock::now() - slot.state_ts;
       auto ms = std::chrono::duration_cast<std::chrono::milliseconds>(elapsed).count();
 
-      // Inject transparent background CSS if requested (once)
+      // Inject transparent background via CDP if requested (once)
+      // This is exactly what Puppeteer does: Emulation.setDefaultBackgroundColorOverride
       if (!slot.bg_injected && slot.request.omit_background && slot.browser) {
+        // Set compositor background to transparent via DevTools protocol
+        CefRefPtr<CefDictionaryValue> params = CefDictionaryValue::Create();
+        CefRefPtr<CefDictionaryValue> color = CefDictionaryValue::Create();
+        color->SetInt("r", 0);
+        color->SetInt("g", 0);
+        color->SetInt("b", 0);
+        color->SetDouble("a", 0);
+        params->SetDictionary("color", color);
+        slot.browser->GetHost()->ExecuteDevToolsMethod(
+            0, "Emulation.setDefaultBackgroundColorOverride", params);
+        // Also set CSS transparency for elements with explicit background
         slot.browser->GetMainFrame()->ExecuteJavaScript(
             "document.documentElement.style.setProperty('background','transparent','important');"
             "if(document.body)document.body.style.setProperty('background','transparent','important');",
@@ -879,20 +875,6 @@ void TickSlot(BrowserSlot& slot) {
             }
           }
 
-          // Trim trailing transparent rows for full-page screenshots
-          // (scrollHeight can overestimate due to body margin/padding)
-          if (slot.request.full_page && !slot.request.has_clip && !slot.measure.has_element) {
-            int trimmed = TrimTransparentBottom(*save_pixels, save_w, save_h);
-            if (trimmed > 0 && trimmed < save_h) {
-              std::vector<uint8_t> trimBuf;
-              CropPixelBuffer(*save_pixels, save_w, save_h,
-                              0, 0, save_w, trimmed, trimBuf);
-              cropped = std::move(trimBuf);
-              save_pixels = &cropped;
-              save_h = trimmed;
-            }
-          }
-
           // Check if slicing is requested
           if (slot.request.slice_height > 0 && save_h > slot.request.slice_height) {
             auto slices = ComputeSlices(save_h, slot.request.slice_height);
@@ -951,6 +933,11 @@ void TickSlot(BrowserSlot& slot) {
         slot.view_w = slot.request.width;
         slot.view_h = slot.request.height;
         if (slot.browser) {
+          // Reset compositor background to opaque white if it was overridden
+          if (slot.request.omit_background) {
+            slot.browser->GetHost()->ExecuteDevToolsMethod(
+                0, "Emulation.setDefaultBackgroundColorOverride", nullptr);
+          }
           slot.browser->GetHost()->WasResized();
           slot.browser->GetMainFrame()->LoadURL("about:blank");
         }
@@ -1139,9 +1126,9 @@ int main(int argc, char** argv) {
 
   CefBrowserSettings browser_settings;
   browser_settings.windowless_frame_rate = 30;
-  // Use transparent background so omitBackground option works correctly.
-  // Pages with default CSS (background: canvas) still render white.
-  browser_settings.background_color = CefColorSetARGB(0, 0, 0, 0);
+  // Default to opaque white — same as a real browser.
+  // omitBackground dynamically injects transparent bg per-request via CSS+JS.
+  browser_settings.background_color = CefColorSetARGB(255, 255, 255, 255);
 
   g_slots.resize(g_pool_size);
   for (int i = 0; i < g_pool_size; i++) {
