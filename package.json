@@ -1,6 +1,6 @@
 {
   "name": "cef-screenshot",
-  "version": "0.2.3",
+  "version": "0.3.0",
   "description": "基于 CEF 离屏渲染的超低内存网页截图工具",
   "type": "module",
   "main": "index.js",
