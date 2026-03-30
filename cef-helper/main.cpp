@@ -201,6 +201,22 @@ void CropPixelBuffer(const std::vector<uint8_t>& src, int srcW, int /*srcH*/,
   }
 }
 
+// ── Trim trailing fully-transparent rows ────────────────────────────────
+// For full-page captures, scrollHeight can overestimate (body margin etc.),
+// leaving transparent rows at the bottom.  Scan upward to find the last row
+// with any pixel whose alpha > 0, and return the trimmed height.
+int TrimTransparentBottom(const std::vector<uint8_t>& pixels, int w, int h) {
+  for (int y = h - 1; y >= 0; --y) {
+    const uint8_t* row = pixels.data() + (size_t)y * w * 4;
+    for (int x = 0; x < w; ++x) {
+      // BGRA layout — alpha is at offset 3
+      if (row[x * 4 + 3] != 0)
+        return y + 1;
+    }
+  }
+  return h;  // entirely transparent — return original
+}
+
 } // namespace
 
 // ========================================================
@@ -860,6 +876,20 @@ void TickSlot(BrowserSlot& slot) {
               save_pixels = &cropped;
               save_w = cw;
               save_h = ch;
+            }
+          }
+
+          // Trim trailing transparent rows for full-page screenshots
+          // (scrollHeight can overestimate due to body margin/padding)
+          if (slot.request.full_page && !slot.request.has_clip && !slot.measure.has_element) {
+            int trimmed = TrimTransparentBottom(*save_pixels, save_w, save_h);
+            if (trimmed > 0 && trimmed < save_h) {
+              std::vector<uint8_t> trimBuf;
+              CropPixelBuffer(*save_pixels, save_w, save_h,
+                              0, 0, save_w, trimmed, trimBuf);
+              cropped = std::move(trimBuf);
+              save_pixels = &cropped;
+              save_h = trimmed;
             }
           }
 
